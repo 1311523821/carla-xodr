@@ -1,0 +1,3 @@
+# vendor 里是 three.js 及其附加模块（1.4 MB），不该参与语言占比统计，
+# 否则 GitHub 会把这仓库显示成"主要是 JavaScript"。
+editor_static/vendor/** linguist-vendored

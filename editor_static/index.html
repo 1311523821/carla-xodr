@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>carla-xodr 描线编辑器</title>
+<link rel="stylesheet" href="editor.css">
+</head>
+<body>
+<!-- 工具栏按流水线的真实阶段分组（README 的第 1/2/3~6 步），「视图」不编号：
+     它不是阶段，是随时可切的观察方式。 -->
+<div id="topbar">
+  <div class="grp" id="gScene">
+    <span class="tag"><i>01</i>场景</span>
+    <div class="ctl"><button id="btnLoad" class="primary">加载数据</button></div>
+  </div>
+
+  <div class="grp">
+    <span class="tag"><i>02</i>描线</span>
+    <div class="ctl">
+      <button id="btnNew">＋ 新建路</button>
+      <button id="btnDel">删除当前路</button>
+      <button id="btnUndo">撤销<kbd>Ctrl+Z</kbd></button>
+    </div>
+  </div>
+
+  <div class="grp">
+    <span class="tag"><i>03</i>产出</span>
+    <div class="ctl">
+      <button id="btnSave" class="primary">保存 traces.json</button>
+      <button id="btnEmit" class="primary">生成 xodr</button>
+      <button id="btnAlign">对齐检查</button>
+      <button id="btnDeploy">部署到 CARLA</button>
+      <button id="btnImport" title="复制 make import 命令，拿到终端自己跑（首次导入、或 FBX 换了才需要）">⎘ make import</button>
+      <button id="btnCfg" title="部署写到哪儿、缓存删哪儿">⚙ 路径</button>
+    </div>
+  </div>
+
+  <div class="grp view">
+    <span class="tag">视图</span>
+    <div class="ctl">
+      <span class="sub"><label><input type="checkbox" id="zOn" checked> 裁剪高于</label>
+        <input id="zCut" type="number" value="0" step="0.05"><span class="unit">m</span></span>
+      <span class="sub"><label><input type="checkbox" id="showBand" checked> 车道宽度预览</label>
+        <label><input type="checkbox" id="showGrid"> 米网格</label>
+        <label><input type="checkbox" id="showOcc"> 显示被遮挡的路</label></span>
+      <span class="sub"><label><input type="checkbox" id="use3D" checked> 显示纹理场景</label>
+        <label><input type="checkbox" id="orbit"> 3D 轨道查看</label></span>
+    </div>
+  </div>
+</div>
+
+<div id="main">
+  <div id="canvasWrap">
+    <canvas id="gl"></canvas>
+    <canvas id="cv"></canvas>
+    <div id="zcap"><span class="tag">裁剪 Z</span><span id="zRead">–</span></div>
+    <canvas id="zstrip" width="54" title="上下拖动设置裁剪阈值：顶端=场景Z最大，底端=场景Z最小"></canvas>
+    <div id="empty" hidden>
+      <div id="emptyCard">
+        <div id="emptyAxis" aria-hidden="true"><i></i><span>Z</span></div>
+        <h2>还没有场景</h2>
+        <p>点左上角<b>「加载数据」</b>，选一个扫描成果 FBX。<br>
+           它同时是屏幕上的纹理网格和服务端判地板/遮挡的射线场，两者必须是同一份几何。</p>
+        <button id="btnLoad2" class="primary">加载数据</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="side">
+    <h3>道路列表</h3>
+    <div id="roadList"></div>
+
+    <h3>当前路属性</h3>
+    <div id="props" class="dim">未选中</div>
+
+    <h3>部署设置</h3>
+    <div id="deployCfg" hidden>
+      <label>CARLA 根目录<input id="cfgRoot" type="text" spellcheck="false"></label>
+      <label>关卡包名<input id="cfgPkg" type="text" spellcheck="false"
+             placeholder="留空 = 跟地图名相同"></label>
+      <label>客户端缓存根<input id="cfgCache" type="text" spellcheck="false"
+             placeholder="默认 ~/carlaCache"></label>
+      <div class="mono" id="cfgPreview"></div>
+      <div id="cfgFoot"><button id="cfgSave" class="primary">保存</button>
+        <span id="cfgMsg" class="dim"></span></div>
+      <p class="dim small">写进 <span id="cfgFile" class="mono"></span>，只影响「部署到 CARLA」
+        写哪儿、删哪儿；不动 <code>make import</code> 的 <code>--import-dir</code>。</p>
+    </div>
+
+    <h3>实时诊断 <span id="diagAge" class="dim small"></span></h3>
+    <div id="diag"></div>
+
+    <h3>对齐检查 <span id="alignAge" class="dim small"></span></h3>
+    <div id="align" class="dim">还没跑。它把 xodr 的路面高度逆映射回扫描帧，和网格上的地板
+      逐点比 Δz —— 就是"车会不会悬空/陷进去"的预测量，约 3 秒，不需要服务端。</div>
+
+    <h3>操作提示</h3>
+    <ul class="hint">
+      <li><b>左键</b>空白处：给当前路加点</li>
+      <li><b>Shift+左键</b>：强制加点（不去吸附顶点）</li>
+      <li><b>左键</b>已有顶点：选中并可拖动</li>
+      <li><b>Alt+左键</b>线段上：在该段插入点</li>
+      <li><b>滚轮</b>缩放，<b>中键/右键拖拽</b>平移</li>
+      <li><b>Delete</b> 删选中点，<b>Ctrl+Z</b> 撤销</li>
+      <li>密点要先放大再点：底部状态栏右侧显示当前 px/m 与吸附半径</li>
+      <li>裁剪拉条：顶端=场景 Z 最大，底端=Z 最小；往下拖依次剥掉屋顶、桌面、家具</li>
+      <li>颜色：青=地板 暗=无地板 橙=净空不足</li>
+      <li>高程不用管，服务端从扫描网格反推</li>
+    </ul>
+  </div>
+</div>
+
+<div id="mask" hidden>
+  <div id="dlg" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
+    <div id="dlgHead">
+      <h2 id="dlgTitle">选择扫描 FBX</h2>
+      <div id="dlgPath" class="mono" title="当前目录"></div>
+    </div>
+    <ul id="dlgList" tabindex="0" aria-label="FBX 文件列表"></ul>
+    <div id="dlgRun" hidden>
+      <div id="dlgBarWrap"><div id="dlgBar"></div></div>
+      <ol id="dlgPhases"></ol>
+      <div id="dlgDetail" class="mono"></div>
+    </div>
+    <div id="dlgFoot">
+      <span id="dlgMsg" class="dim"></span>
+      <span class="grow"></span>
+      <button id="dlgUp">上一级</button>
+      <button id="dlgOk" class="primary" disabled>载入所选</button>
+      <button id="dlgClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 状态栏是这工具唯一的反馈通道，所以它常驻：左=当前状态（未保存/纹理载入进度），
+     中=最近一次动作的结果，右=光标坐标与比例尺（读数跟着画布走，不占工具栏）。 -->
+<div id="status">
+  <span id="chipDirty" class="chip" hidden>未保存</span>
+  <span id="glLoad" class="chip mono"></span>
+  <span id="statusMsg" class="grow"></span>
+  <span id="cursor" class="mono">x=– y=–</span>
+</div>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three/three.module.js" } }
+</script>
+<!-- editor.js 必须 defer：模块脚本本身就是 defer 的，声明在它前面的模块
+     (scene3d.js) 会先执行完，window.Scene3D 才保证就绪，不用轮询等待。 -->
+<script type="module">
+import * as S3 from "./scene3d.js";
+window.Scene3D = S3;
+</script>
+<script src="editor.js" defer></script>
+</body>
+</html>

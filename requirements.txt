@@ -1,0 +1,30 @@
+# carla-xodr 依赖
+#
+# 安装：
+#   pip install -r requirements.txt
+#
+# 注意 numpy 的版本上限：CARLA 的 PythonAPI 与 numpy>=2 的 ABI 不兼容，实测
+# 升到 2.x 后 import carla 直接失败。open3d 0.17 的 RaycastingScene 在 1.21 上可用，
+# 整套射线场（mesh_field.FloorField）依赖它。
+
+# —— 核心：几何拟合、射线场、校验 ——
+numpy==1.21.5
+scipy>=1.8,<2
+open3d==0.17.0
+
+# —— 浏览器描线编辑器（trace_editor.py）——
+Flask>=2.2
+lxml>=4.8              # validate.check_xml 用它解析，判断 XML 是否可解析
+
+# —— 出图脚本 render_plan.py / render_section.py / cnplot.py ——
+matplotlib>=3.5
+
+# glb_shrink.py 缩纹理用（在函数内 import，因为 Blender 自带的 python 没有它）
+Pillow>=9.0
+
+# —— 可选：只有要和 CARLA 服务端/真解析器交互时才需要 ——
+# validate.py 用它做离线真解析闭环（carla.Map(name, xml)，不需要服务端）；
+# calibrate_frame.py / list_world_actors.py 需要连运行中的 CARLA。
+# 按你的 CARLA 版本装，例如：
+#   pip install carla==0.9.16
+# 没有它时 validate.py 会跳过 carla 相关的检查项，其余检查照常运行。

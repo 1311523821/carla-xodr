@@ -1,0 +1,246 @@
+/* ================================================================ 令牌 ==
+   这是一台量具，不是一个网站：台面永远比被测量的东西暗，扫描渲染是画面里
+   唯一亮的东西。所有"读数"（阈值、px/m、RMSE、米数）走等宽字，因为它们
+   本来就是数字，等宽才能让上下行对得上。
+   画布配色（青=地板 暗=无地板 橙=净空不足 红=裁掉）是用户学过的数据图例，
+   任何时候都不要跟着界面改版一起换掉。 */
+:root {
+  /* 机箱 */
+  --bg: #14161a; --rail: #181b21; --panel: #1c1f26; --well: #20242c;
+  --line: #2b303a; --edge: #3a4150;
+  /* 文字三级 */
+  --fg: #dfe3ea; --dim: #8b93a2; --mute: #5b6371;
+  /* 语义：蓝只表示"选中/正在操作"，通过/警告/失败各占一个色 */
+  --acc: #4da3ff; --ok: #8fd694; --warn: #ff9f2e; --bad: #ff5b5b;
+  --sans: "Noto Sans CJK SC", "WenQuanYi Micro Hei", system-ui, sans-serif;
+  --mono: ui-monospace, "DejaVu Sans Mono", "Noto Sans Mono", monospace;
+}
+* { box-sizing: border-box; }
+/* ID 选择器写的 display 会压过 [hidden] 的 UA 规则（#mask/#empty 就中招了），
+   所以给 hidden 一个全局兜底，不然"隐藏"根本藏不住。 */
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+  font: 13px/1.5 var(--sans); }
+body { display: flex; flex-direction: column; overflow: hidden; }
+.mono { font-family: var(--mono); font-size: 11px; color: var(--dim); }
+.dim { color: var(--dim); } .small { font-size: 11px; }
+.grow { flex: 1; min-width: 0; }
+
+/* ================================================== 工具栏：四个模块 == */
+#topbar { display: flex; flex-wrap: wrap; align-items: stretch; gap: 6px;
+  padding: 6px 8px; background: var(--rail); border-bottom: 1px solid var(--line);
+  flex: none; }
+/* 一个模块 = 一条竖排的标签 + 一列按钮。标签把"加载→描线→产出"的真实工序
+   写在脸上，视图没有编号：它不是工序，是随时可切的观察方式。 */
+.grp { display: flex; align-items: stretch; border: 1px solid var(--line);
+  border-radius: 6px; background: var(--well); }
+.grp.view { margin-left: auto; }
+.tag { display: flex; flex-direction: column; justify-content: center; flex: none;
+  padding: 0 6px; border-right: 1px solid var(--line); text-align: center;
+  font: 600 9.5px/1.15 var(--mono); letter-spacing: .06em; color: var(--mute);
+  white-space: nowrap; user-select: none; }
+.tag i { font-style: normal; color: var(--dim); letter-spacing: .04em; }
+.ctl { display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+  padding: 4px; min-width: 0; }
+.sub { display: flex; align-items: center; gap: 8px; flex: none;
+  padding-left: 8px; border-left: 1px solid var(--line); }
+.sub:first-child { padding-left: 0; border-left: none; }
+
+button { display: inline-flex; align-items: center; gap: 5px; flex: none;
+  background: #262b34; color: var(--fg); border: 1px solid var(--line);
+  border-radius: 4px; padding: 3px 8px; cursor: pointer; font: 11.5px/1.4 var(--sans);
+  white-space: nowrap; }
+button:hover { background: #313845; border-color: var(--edge); }
+button:active { transform: translateY(1px); }
+button:focus-visible { outline: 2px solid var(--acc); outline-offset: 1px; }
+button[disabled] { opacity: .4; cursor: default; }
+button[disabled]:active { transform: none; }
+button.primary { background: #1f4f7a; border-color: #2f6f9f; }
+button.primary:hover { background: #27648f; }
+/* 状态灯：按钮文字说清状态，灯让人扫一眼就知道要不要点 */
+button.warn { border-color: var(--warn); color: var(--warn); }
+#btnDeploy::before { content: ""; flex: none; width: 5px; height: 5px;
+  border-radius: 50%; background: var(--edge); box-shadow: 0 0 0 1px #00000040; }
+#btnDeploy.warn::before { background: var(--warn); }
+#btnDeploy.ok::before { background: var(--ok); }
+kbd { flex: none; padding: 0 3px; border: 1px solid var(--line); border-radius: 3px;
+  background: #1a1d23; color: var(--mute); font: 10px/1.5 var(--mono); }
+label { display: inline-flex; align-items: center; gap: 4px; flex: none;
+  color: var(--dim); font-size: 11.5px; user-select: none; white-space: nowrap; }
+input[type=checkbox] { width: 13px; height: 13px; margin: 0; flex: none;
+  accent-color: var(--acc); cursor: pointer; }
+input[type=checkbox]:focus-visible { outline: 2px solid var(--acc); outline-offset: 1px; }
+#zCut { width: 56px; background: #12141a; color: var(--fg); border: 1px solid var(--line);
+  border-radius: 3px; padding: 3px 5px; font: 11.5px var(--mono); }
+#zCut:focus { outline: none; border-color: var(--acc); }
+.unit { color: var(--mute); font: 11px var(--mono); }
+
+/* ============================================================== 主区 == */
+#main { display: flex; flex: 1 1 auto; min-height: 0; }
+#canvasWrap { flex: 1 1 auto; min-width: 200px; overflow: hidden; position: relative;
+  background: #0c0d10; cursor: crosshair; }
+canvas { display: block; }
+/* 三层：gl(纹理场景, 由 JS 定位到底图同样的位置和尺寸) < cv(2D 交互) < zstrip(拉条)。
+   三层的 z-index 必须都写：漏了 zstrip，它就会被 cv 盖住 —— 画布透明时看着还在，
+   但 elementFromPoint 命中的是 cv，拉条和 OrbitControls 全都收不到事件。 */
+#gl { position: absolute; display: none; z-index: 1; }
+#cv { position: absolute; left: 0; top: 0; z-index: 2; }
+
+/* ============================================ 签名件：Z 轴剖切标尺 == */
+/* 帽和尺是一体的：上面那块是读数，下面那条 canvas 是手柄，合起来就是这工具做的事。 */
+#zcap { position: absolute; left: 8px; top: 8px; width: 54px; z-index: 3;
+  padding: 3px 0 2px; text-align: center; pointer-events: none;
+  background: var(--rail); border: 1px solid var(--line); border-bottom: none;
+  border-radius: 5px 5px 0 0; }
+#zcap .tag { border-right: none; padding: 0; letter-spacing: .06em; }
+#zRead { display: block; color: var(--acc); font: 11px/1.35 var(--mono); }
+#zstrip { position: absolute; left: 8px; top: 40px; width: 54px; z-index: 3;
+  background: #101218; border: 1px solid var(--line); border-radius: 0 0 5px 5px;
+  cursor: ns-resize; touch-action: none; }
+
+#side { width: 340px; flex: none; background: var(--panel);
+  border-left: 1px solid var(--line); padding: 0 12px 16px; overflow-y: auto; }
+/* 段落标题吸顶：这一栏很长，滚下去就知道自己在哪一节 */
+h3 { position: sticky; top: 0; z-index: 1; margin: 0; padding: 10px 0 5px;
+  border-top: 1px solid var(--line); background: var(--panel);
+  font: 600 10px/1.3 var(--mono); letter-spacing: .12em; color: var(--mute); }
+h3:first-child { border-top: none; }
+h3 .small { float: right; font: 10px var(--mono); letter-spacing: 0; }
+
+.road { position: relative; display: flex; align-items: center; gap: 7px;
+  padding: 4px 6px 4px 11px; border-radius: 4px; cursor: pointer;
+  border: 1px solid transparent; }
+/* 行左侧那道色条就是它在图上那根线的颜色，不用再放个方块去"对照" */
+.road::before { content: ""; position: absolute; left: 3px; top: 5px; bottom: 5px;
+  width: 2px; border-radius: 1px; background: var(--rc, var(--edge)); }
+.road:hover { background: #232833; }
+.road.active { background: #223145; border-color: #33597f; }
+.road .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.road .sp { flex: none; color: var(--mute); font: 11px var(--mono); }
+.badge { flex: none; font-size: 10px; padding: 1px 5px; border-radius: 8px;
+  background: #2a3a2a; color: var(--ok); }
+.badge.warn { background: #3d2f18; color: var(--warn); }
+.badge.bad { background: #3d1d1d; color: var(--bad); }
+
+#props label, #deployCfg label { display: block; margin: 7px 0 2px;
+  font-size: 11px; color: var(--mute); }
+#props input, #deployCfg input { width: 100%; background: #12141a; color: var(--fg);
+  border: 1px solid var(--line); border-radius: 3px; padding: 4px 6px;
+  font: 12px var(--mono); }
+#props input:focus, #deployCfg input:focus { outline: none; border-color: var(--acc); }
+#cfgPreview { margin: 8px 0 4px; word-break: break-all; }
+#cfgFoot { display: flex; align-items: center; gap: 8px; }
+#cfgMsg.err { color: var(--bad); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+
+/* 诊断/对齐都是"读数"：标签走 sans 的暗色，数值走等宽的亮色，右对齐成表 */
+#diag .row, #align .row { padding: 5px 0; border-bottom: 1px solid #23272f;
+  font-size: 12px; }
+#align .row { display: flex; align-items: baseline; justify-content: space-between;
+  gap: 10px; }
+#diag .k, #align .k { color: var(--mute); font-size: 11px; }
+#diag .v, #align .v { font-family: var(--mono); font-size: 11.5px; }
+#diag .ok, #align .ok { color: var(--ok); } #diag .no, #align .no { color: var(--bad); }
+ul.hint { margin: 0; padding-left: 18px; color: var(--dim); font-size: 11.5px; }
+ul.hint li { margin: 2px 0; }
+ul.hint b { color: var(--fg); font-weight: 600; }
+
+/* ================================================== 状态栏：唯一反馈 == */
+/* 以前它是 position:fixed 浮在侧栏上（侧栏得靠 padding-bottom:30px 躲它）。
+   现在它是 body 这一列的第三行，消息长了自己换行，读数常驻右侧。 */
+#status { flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 3px 10px; background: var(--rail); border-top: 1px solid var(--line);
+  font: 11.5px/1.45 var(--mono); color: var(--dim); }
+#statusMsg { min-height: 17px; max-height: 4.7em; overflow-y: auto;
+  overflow-wrap: anywhere; }
+#status.err #statusMsg { color: var(--bad); }
+#cursor { flex: none; padding-left: 9px; border-left: 1px solid var(--line);
+  color: var(--mute); }
+.chip { flex: none; display: inline-flex; align-items: center; gap: 5px;
+  padding: 0 7px; border: 1px solid var(--line); border-radius: 9px;
+  background: var(--well); color: var(--dim); font-size: 10.5px; }
+#chipDirty { border-color: var(--warn); color: var(--warn); }
+#chipDirty::before { content: ""; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--warn); }
+#glLoad:empty { display: none; }
+
+/* 窄窗口下把侧栏挪到下面，保证画布始终有可用宽度 */
+@media (max-width: 900px) {
+  #main { flex-direction: column; }
+  #canvasWrap { min-height: 45vh; flex: 1 1 55%; }
+  #side { width: auto; border-left: none; border-top: 1px solid var(--line);
+    max-height: 45vh; }
+  .grp.view { margin-left: 0; }
+}
+
+/* ========================================================= 空状态 == */
+/* 没数据时整条工具都是熄火的，只有「加载数据」能点 —— 比摆一堆报错清楚 */
+body:not([data-loaded]) #topbar > .grp:not(#gScene) { opacity: .3; pointer-events: none; }
+body:not([data-loaded]) #side { opacity: .45; pointer-events: none; }
+body:not([data-loaded]) #zstrip, body:not([data-loaded]) #zcap { display: none; }
+/* 只盖画布区：topbar 和侧栏要还在，用户得看得见自己在哪里 */
+#empty { position: absolute; inset: 0; z-index: 5; display: grid;
+  place-items: center; background: #0c0d10; }
+#emptyCard { max-width: 460px; padding: 0 8px; }
+#emptyCard h2 { margin: 0 0 10px; font-size: 18px; font-weight: 600; color: var(--fg); }
+#emptyCard p { margin: 0 0 20px; font-size: 12.5px; line-height: 1.8; color: var(--dim); }
+#emptyCard b { color: var(--fg); font-weight: 600; }
+/* 签名件：一根 Z 轴标尺。红斜纹是拉条上"高于阈值全裁掉"的那个花纹，
+   蓝是保留下来的部分 —— 这个工具做的事全在这一格里。 */
+#emptyAxis { position: relative; width: 3px; height: 78px; margin-bottom: 20px;
+  background: linear-gradient(var(--bad) 0 46%, var(--acc) 46% 100%); }
+#emptyAxis i { position: absolute; left: -8px; right: -8px; top: 0; height: 36px;
+  background: repeating-linear-gradient(-45deg, #ff5b5b4d 0 3px, transparent 3px 8px); }
+#emptyAxis span { position: absolute; left: 13px; top: 44%; font-size: 10px;
+  color: var(--mute); font-family: var(--mono); }
+
+/* =================================================== 加载数据对话框 == */
+#mask { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center;
+  background: #050608cc; }
+#dlg { width: min(640px, 92vw); max-height: 84vh; display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+  box-shadow: 0 18px 60px #000a; }
+#dlgHead { padding: 13px 16px 11px; border-bottom: 1px solid var(--line); }
+#dlgHead h2 { margin: 0 0 6px; font-size: 14px; text-transform: none;
+  letter-spacing: 0; color: var(--fg); }
+#dlgPath { font-size: 11px; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; }
+#dlgList { list-style: none; margin: 0; padding: 6px; flex: 1 1 auto;
+  min-height: 200px; overflow: auto; outline: none; }
+#dlgList:focus-visible { box-shadow: inset 0 0 0 1px var(--acc); }
+#dlgList li { display: flex; gap: 10px; align-items: baseline; padding: 5px 10px;
+  border-radius: 4px; font-size: 12.5px; cursor: pointer; }
+#dlgList li:hover, #dlgList li.cur { background: #232833; }
+#dlgList li.sel { background: #223145; box-shadow: inset 2px 0 0 var(--acc); }
+/* 目录和 fbx 一眼分开：能进的画箭头，能载的才是正文 */
+#dlgList li.dir { color: var(--acc); }
+#dlgList li.dir::before { content: "▸"; flex: none; width: 10px; color: var(--mute); }
+#dlgList li.fbx::before { content: ""; flex: none; width: 10px; }
+#dlgList .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#dlgList .sz { margin-left: auto; flex: none; font-size: 11px; color: var(--mute);
+  font-family: var(--mono); font-variant-numeric: tabular-nums; }
+#dlgList .empty { color: var(--dim); cursor: default; background: none; }
+#dlgList .empty::before { content: none; }
+#dlgFoot { display: flex; gap: 8px; align-items: center; padding: 10px 14px;
+  border-top: 1px solid var(--line); }
+#dlgMsg { font-size: 11.5px; }
+#dlgMsg.bad { color: var(--bad); }
+/* 进度：四十秒的活要能看见走到哪一步、每步花了多久，而不是一个转圈 */
+#dlgRun { padding: 15px 16px 17px; }
+#dlgBarWrap { height: 3px; background: #232833; }
+#dlgBar { height: 100%; width: 0; background: var(--bad); transition: width .4s linear; }
+#dlgPhases { list-style: none; margin: 13px 0 0; padding: 0; }
+#dlgPhases li { display: flex; gap: 9px; padding: 3px 0; font-size: 12px;
+  color: var(--mute); }
+#dlgPhases li.on { color: var(--fg); }
+#dlgPhases li.ok { color: var(--ok); }
+#dlgPhases .mk { width: 11px; flex: none; font-family: var(--mono); }
+#dlgPhases .t { margin-left: auto; font-size: 11px; color: var(--dim);
+  font-family: var(--mono); font-variant-numeric: tabular-nums; }
+#dlgDetail { margin-top: 11px; min-height: 15px; font-size: 11px; color: var(--dim);
+  font-family: var(--mono); white-space: pre-wrap; }
+@media (prefers-reduced-motion: reduce) {
+  #dlgBar { transition: none; }
+  button:active { transform: none; }
+}

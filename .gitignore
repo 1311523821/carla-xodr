@@ -1,0 +1,31 @@
+# 场景缓存：每份扫描烘出来的 scene.glb / basemap.png / traces.json / frame.json / out/
+# 这些是**真实扫描数据**（几何 + 照片纹理）和本机标定结果，不进版本库：
+#   · 体积大（单场景 GLB 约 15 MB）
+#   · 可能涉及场地隐私
+#   · traces.json 是你自己描的线，frame.json 是这一台机器这一份扫描的标定解
+# 换台机器第一次加载 FBX 会自动重烘（Blender 那步约 30 s，之后走缓存）。
+cache/
+
+# 运行时产生的部署路径配置（含本机绝对路径），默认值在 trace_editor.DEPLOY_DEFAULTS 里
+deploy_config.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Blender 描线路径的中间产物
+trace.blend
+trace.blend1
+*.sha256
+tmp/
+
+# 出图脚本的默认输出（--out 可以指到别处）
+plan.png
+section.png
+
+# 编辑器
+.DS_Store
+*.swp

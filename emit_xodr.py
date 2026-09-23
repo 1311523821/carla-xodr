@@ -180,7 +180,10 @@ def emit(fitted, map_name, out_path, geo_ref=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in-dir", default="out")
-    ap.add_argument("--map-name", default="TestMap")
+    # 地图名不给就报错，不默认成 TestMap：编辑器那边名字跟着 FBX 走，
+    # 一个写死的默认值只会让命令行用户悄悄导出一份和配对不符的文件。
+    ap.add_argument("--map-name", required=True,
+                    help="地图名 = FBX 文件名去掉扩展名（配对靠同名，见 README 第 5 步）")
     ap.add_argument("--asam-name", default=None,
                     help="默认 <map-name>_asam —— validate.py 的 autodetect 就是这个约定，"
                          "两边不一致时那份 ASAM 检查会被静默跳过")

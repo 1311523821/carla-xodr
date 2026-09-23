@@ -61,8 +61,7 @@ PHASES = ["烘焙 GLB", "建射线场", "生成底图"]
 PROG = {"state": "idle", "fbx": None, "phase": -1, "detail": "",
         "t0": 0.0, "error": None, "marks": {}, "end": 0.0}
 LOAD_LOCK = threading.Lock()
-SCANS = {"root": None, "cache": None, "blender": None, "maxtex": 1024,
-           "traces": None, "import_dir": None}
+SCANS = {"root": None, "cache": None, "traces": None}
 
 
 def prog(state, phase=None, detail=None):
@@ -84,16 +83,19 @@ def prog(state, phase=None, detail=None):
 
 
 # ------------------------------------------------------- FBX -> 内部资产 --
-def find_blender(cli):
-    """Blender 不在 PATH 里是常态，按 显式参数 > 环境变量 > which > 家目录 找。"""
-    for p in (cli, os.environ.get("BLENDER"), shutil.which("blender")):
+def find_blender(cfg):
+    """Blender 不在 PATH 里是常态，按 设置面板 > 环境变量 > which > 家目录 找。
+    最后那层通配只是"本机解压成 ~/blender-*-linux-x64 时能自动中"的便利，
+    换台机器不成立，所以真找不到就明说去哪儿填，而不是猜一个路径。"""
+    for p in (cfg.get("blender"), os.environ.get("BLENDER"), shutil.which("blender")):
         if p and os.path.exists(p):
             return p
     hits = sorted(glob.glob(os.path.expanduser("~/blender-*-linux-x64/blender")))
     if hits:
         return hits[-1]
-    raise SystemExit("找不到 Blender 可执行文件。用 --blender <路径> 指定，"
-                     "或设 BLENDER 环境变量。")
+    raise SystemExit("找不到 Blender 可执行文件 —— 在页面「⚙ 路径」的 Blender 一栏填绝对路径"
+                     "（留空则依次试 $BLENDER、which blender）")
+
 
 
 def report_box(glb):
@@ -116,9 +118,10 @@ def report_box(glb):
     return s
 
 
-def bake(fbx, cache, blender_bin, maxtex):
+def bake(fbx, cache, cfg):
     """从 FBX 烘出唯一的场景资产 scene.glb。显示层直接拿它渲染，服务端的
     地板高度场/遮挡判定也用 open3d 读同一个文件，所以不存在"两份几何对不上"。"""
+    maxtex = int(cfg["maxtex"])
     glb = os.path.join(cache, "scene.glb")
     if os.path.exists(glb) and os.path.getmtime(glb) > os.path.getmtime(fbx):
         big = [s for s in glb_shrink.image_sizes(glb) if max(s) > maxtex]
@@ -141,7 +144,7 @@ def bake(fbx, cache, blender_bin, maxtex):
                 done, b1 / 1e6, b2 / 1e6))
             report_box(glb)
             return glb
-    blender_bin = find_blender(blender_bin)   # 只有真要烘时才要求找得到 Blender
+    blender_bin = find_blender(cfg)         # 只有真要烘时才要求找得到 Blender
     os.makedirs(cache, exist_ok=True)
     cmd = [blender_bin, "--background", "--python",
            os.path.join(HERE, "blender", "prepare_mesh.py"), "--",
@@ -218,7 +221,7 @@ def load_worker(fbx):
     global field
     try:
         cache = cache_dir_for(fbx)
-        glb = bake(fbx, cache, SCANS["blender"], SCANS["maxtex"])
+        glb = bake(fbx, cache, load_config())
         prog("running", 1, "open3d 解析 GLB 三角面")
         f = FloorField(glb)
         traces = SCANS["traces"] or os.path.join(cache, "traces.json")
@@ -688,28 +691,44 @@ def emit_paths():
     return out_dir, stem, os.path.join(out_dir, stem + ".xodr")
 
 
-# 部署要写的三个路径在源码构建里全是推出来的，换台机器或换个 --package 就不成立，
-# 所以做成可编辑的，存 deploy_config.json（留空 = 用这里的默认值）。
-DEPLOY_DEFAULTS = {
-    "carla_root": CARLA_IMPORT_PARENT,
+# 换台机器就不成立的东西一律放这里：路径、主机端口、Blender 位置、纹理上限。
+# 存在 deploy_config.json（已 gitignore），留空 = 用下面的默认值。
+# 规则：**命令行参数只是给默认值播种，面板里存的优先** —— 同一个值不能有两个
+# 各说各话的来源（以前 --import-dir 和面板里的"CARLA 根目录"就是各管一半）。
+TOOL_DEFAULTS = {
+    "carla_root": CARLA_IMPORT_PARENT,               # 源码构建的 CARLA 根目录
+    "import_dir": "",                                # 空 = <carla_root>/Import
     "package": "",                                   # 空 = 跟地图名同名
     "client_cache": os.environ.get("CARLA_CACHE_DIR")
                     or os.path.expanduser("~/carlaCache"),
+    "carla_host": "localhost",                       # 标定要连的服务端
+    "carla_port": "2000",
+    "blender": "",                                   # 空 = $BLENDER / which / 家目录通配
+    "maxtex": "1024",                                # 按显存定，见 PITFALLS 的 Firefox 那条
 }
-DEPLOY_CONFIG = os.path.join(HERE, "deploy_config.json")
+TOOL_CONFIG = os.path.join(HERE, "deploy_config.json")
 
 
-def load_deploy_config():
-    cfg = dict(DEPLOY_DEFAULTS)
-    if os.path.isfile(DEPLOY_CONFIG):
-        with open(DEPLOY_CONFIG) as f:
+def load_config():
+    cfg = dict(TOOL_DEFAULTS)
+    if os.path.isfile(TOOL_CONFIG):
+        with open(TOOL_CONFIG) as f:
             cfg.update({k: v for k, v in json.load(f).items() if k in cfg})
     return cfg
 
 
+def import_dir_of(cfg=None):
+    """生成 xodr 时同名配对投到哪儿。目录不存在就返回 None（跳过投放，不报错）。"""
+    cfg = cfg or load_config()
+    d = os.path.expanduser(cfg["import_dir"]
+                           or os.path.join(cfg["carla_root"], "Import"))
+    return d if os.path.isdir(d) else None
+
+
+
 def carla_target(stem, cfg=None):
     """`make import` 给这张图建出来的关卡目录。"""
-    cfg = cfg or load_deploy_config()
+    cfg = cfg or load_config()
     maps = os.path.join(os.path.expanduser(cfg["carla_root"]), "Unreal", "CarlaUE4",
                         "Content", cfg["package"] or stem, "Maps", stem)
     return {"maps": maps,
@@ -738,8 +757,8 @@ def client_cache_dirs(stem, cfg=None):
     目录，于是"部署成功"却把陈旧采样表留在原地，段错误照旧。默认 package 为空、
     包名等于地图名，所以一直没暴露。
     """
-    cfg = cfg or load_deploy_config()
-    root = os.path.expanduser(cfg["client_cache"] or DEPLOY_DEFAULTS["client_cache"])
+    cfg = cfg or load_config()
+    root = os.path.expanduser(cfg["client_cache"] or TOOL_DEFAULTS["client_cache"])
     pkg = cfg["package"] or stem
     return [d for d in sorted(glob.glob(os.path.join(root, "*", pkg, "Maps", stem)))
             if os.path.isdir(d)]
@@ -755,9 +774,35 @@ def client_cache_files(stem, cfg=None, sub=None):
     return sorted(out)
 
 
+def calib_status():
+    """标定这一步只做成"给你命令 + 告诉你现在标没标"，不在浏览器里跑：
+    它需要一个已经 Play 起来、且加载了这张图的 CARLA 服务端，默认参数下要打
+    一万四千多条同步射线（sample_world_flat 还要按 3x3 邻域再打一轮），
+    是分钟级的活，和 validate / check_alignment 那种纯文件运算不是一个量级。"""
+    mesh = os.path.join(STATE["cache"], "scene.glb")
+    fjp = FG.frame_json_path(mesh)
+    cfg = load_config()
+    try:
+        acc = json.load(open(fjp))
+    except Exception:
+        acc = {}
+    m = acc.get("A_metrics") or {}
+    return {
+        # host/port 显式写进命令：默认值 localhost:2000 是"服务端在同一台机器"的
+        # 假设，换个人/换台机器不成立，让复制命令的人自己去猜连不上是因为啥不值当。
+        "cmd": ("cd %s && python3 calibrate_frame.py --mesh %s --host %s --port %s"
+                " --extent 60 --step 1.0 --write"
+                % (HERE, os.path.relpath(mesh, HERE), cfg["carla_host"], cfg["carla_port"])),
+        "frame_json": os.path.relpath(fjp, HERE),
+        "calibrated": bool(acc.get("calibrated")),
+        "rmse_z_m": m.get("rmse_z_m"), "inlier_frac": m.get("inlier_frac"),
+        "mesh_ready": os.path.exists(mesh),
+    }
+
+
 def deploy_status(src_xodr, stem):
     """不改任何东西，只回答"CARLA 里那份跟你刚生成的是不是同一个"。"""
-    cfg = load_deploy_config()
+    cfg = load_config()
     t = carla_target(stem, cfg)
     pkg = cfg["package"] or stem
     st = {"target": os.path.relpath(t["xodr"], cfg["carla_root"]),
@@ -766,6 +811,7 @@ def deploy_status(src_xodr, stem):
           # 命令原样给出去，前端做成一键复制，省得回终端翻 README。
           "import_cmd": 'cd %s && make import ARGS="--package=%s"'
                         % (cfg["carla_root"], pkg),
+          "calib": calib_status(),
           "state": "未导入"}
     if not os.path.isdir(os.path.dirname(t["xodr"])):
         return st
@@ -794,7 +840,7 @@ def deploy_to_carla(src_xodr, stem):
     `GetWaypointXODR` 返回空指针，`get_trafficmanager()` 当场段错误（退出码 139）。
     这里只删不烘 —— 采样表由客户端运行时重建，本例规模下是瞬间的事。
     """
-    cfg = load_deploy_config()
+    cfg = load_config()
     t = carla_target(stem, cfg)
     if not os.path.isdir(os.path.dirname(t["xodr"])):
         raise SystemExit("CARLA 里还没有 %s 这个目录 —— 先跑一次 make import，"
@@ -833,7 +879,7 @@ def api_deploy():
         out = deploy_to_carla(xodr, stem)
     except (SystemExit, OSError) as e:
         return jsonify({"error": str(e)}), 400
-    root = load_deploy_config()["carla_root"]
+    root = load_config()["carla_root"]
     out["map"] = stem
     out["target"] = os.path.relpath(out["xodr"], root)
     out["xodr"] = os.path.relpath(out["xodr"], HERE)
@@ -845,14 +891,25 @@ def api_deploy():
 
 @app.route("/api/config", methods=["GET", "POST"])
 def api_config():
-    """部署路径的读写。GET 顺带把解析出来的完整目标路径摊开给人看。"""
-    cfg = load_deploy_config()
+    """换机器要改的东西全在这。GET 顺带把解析出来的完整路径摊开给人看，
+    POST 逐项校验后才落盘 —— 填错了当场说，别等生成/部署那步再炸。"""
+    cfg = load_config()
     stem = os.path.splitext(os.path.basename(STATE["fbx"]))[0] if STATE.get("loaded") else ""
+
+    def view(c):
+        try:
+            found = find_blender(c)          # 空值也要解析一遍：面板要能回答
+        except SystemExit:                    # "这台机器上烘得了吗"
+            found = None
+        return dict(c, file=os.path.relpath(TOOL_CONFIG, HERE), map=stem,
+                    defaults=TOOL_DEFAULTS,
+                    staged=import_dir_of(c) or "（目录不存在，生成时跳过投放）",
+                    blender_found=found,
+                    preview=carla_target(stem, c)["xodr"] if stem else None)
+
     if request.method == "GET":
-        return jsonify(dict(cfg, file=os.path.relpath(DEPLOY_CONFIG, HERE),
-                            map=stem, defaults=DEPLOY_DEFAULTS,
-                            preview=carla_target(stem, cfg)["xodr"] if stem else None))
-    for k in DEPLOY_DEFAULTS:
+        return jsonify(view(cfg))
+    for k in TOOL_DEFAULTS:
         if k in request.json:
             cfg[k] = str(request.json[k]).strip()
     if cfg["package"] and ("/" in cfg["package"] or ".." in cfg["package"]):
@@ -860,11 +917,32 @@ def api_config():
     root = os.path.expanduser(cfg["carla_root"])
     if not os.path.isdir(root):
         return jsonify({"error": "CARLA 根目录不存在：%s" % root}), 400
-    out = {k: cfg[k] for k in DEPLOY_DEFAULTS}
-    with open(DEPLOY_CONFIG, "w") as f:
+    if cfg["import_dir"] and not os.path.isdir(os.path.expanduser(cfg["import_dir"])):
+        return jsonify({"error": "投放目录不存在：%s（留空 = 用 <CARLA 根目录>/Import）"
+                                  % cfg["import_dir"]}), 400
+    if not cfg["carla_host"]:
+        return jsonify({"error": "服务端地址不能为空；标定要连它"}), 400
+    try:
+        port = int(cfg["carla_port"])
+        assert 1 <= port <= 65535
+    except (ValueError, AssertionError):
+        return jsonify({"error": "端口得是 1~65535 的整数，现在是 %r" % cfg["carla_port"]}), 400
+    cfg["carla_port"] = str(port)
+    try:
+        tex = int(cfg["maxtex"])
+        assert tex >= 128 and (tex & (tex - 1)) == 0
+    except (ValueError, AssertionError):
+        return jsonify({"error": "纹理上限得是 128 及以上的 2 的幂（如 512/1024/2048），"
+                                 "现在是 %r" % cfg["maxtex"]}), 400
+    cfg["maxtex"] = str(tex)
+    if cfg["blender"] and not os.path.isfile(os.path.expanduser(cfg["blender"])):
+        return jsonify({"error": "Blender 可执行文件不存在：%s（留空 = 自动找）"
+                                  % cfg["blender"]}), 400
+    out = {k: cfg[k] for k in TOOL_DEFAULTS}
+    with open(TOOL_CONFIG, "w") as f:
         json.dump(out, f, indent=1, ensure_ascii=False)
-    return jsonify(dict(out, ok=True, saved=os.path.relpath(DEPLOY_CONFIG, HERE),
-                        preview=carla_target(stem, out)["xodr"] if stem else None))
+    return jsonify(dict(view(out), ok=True, saved=os.path.relpath(TOOL_CONFIG, HERE)))
+
 
 
 @app.route("/api/emit", methods=["POST"])
@@ -912,7 +990,7 @@ def api_emit():
         pair_fbx(STATE["fbx"], out_dir, stem)
         files = [os.path.relpath(os.path.join(out_dir, n), HERE)
                  for n in (stem + ".xodr", stem + "_asam.xodr", stem + ".fbx")]
-        staged = stage_for_import(xodr, STATE["fbx"], SCANS["import_dir"], stem)
+        staged = stage_for_import(xodr, STATE["fbx"], import_dir_of(), stem)
         reps = [road_report(r) for r in doc["roads"]]
         # 校验直接调 validate.run：检查项只有一份实现，web 里全绿而命令行有 FAIL
         # 是最难查的那种不一致。它自己会 import carla 做真解析，所以这里不再单独探一次。
@@ -925,7 +1003,8 @@ def api_emit():
         return jsonify({"error": "%s: %s" % (type(e).__name__, e),
                         "trace": traceback.format_exc()}), 500
     return jsonify({"ok": True, "files": files, "reports": reps,
-                "staged": os.path.relpath(staged, CARLA_IMPORT_PARENT) if staged else None,
+                "staged": os.path.relpath(staged, os.path.expanduser(
+                    load_config()["carla_root"])) if staged else None,
                 "carla_parse_ok": parse_ok, "checks": checks,
                 "frame_note": frame_note,
                 "deploy": deploy_status(xodr, stem)})
@@ -959,11 +1038,13 @@ def main():
                          "扫描放在别的挂载点上时才需要指，例如 --scan-root /data/scans")
     ap.add_argument("--cache", default=os.path.join(HERE, "cache"),
                     help="烘焙产物目录，实际用 <cache>/<fbx名>/")
-    ap.add_argument("--blender", default=None, help="Blender 可执行文件路径")
-    ap.add_argument("--max-texture", type=int, default=1024)
-    ap.add_argument("--import-dir", default=os.path.join(CARLA_IMPORT_PARENT, "Import"),
-                    help="CARLA 的 Import 目录；生成 xodr 时把同名 fbx/xodr 配对放进去。"
-                         "目录不存在就不投放")
+    ap.add_argument("--blender", default=None,
+                    help="Blender 可执行文件路径；也可以事后在页面「⚙ 路径」里填，面板优先")
+    ap.add_argument("--max-texture", type=int, default=None,
+                    help="烘进 GLB 的纹理边长上限，默认 1024；面板里填过的优先")
+    ap.add_argument("--import-dir", default=None,
+                    help="生成 xodr 时把同名 fbx/xodr 配对放进去的目录，"
+                         "默认 <CARLA 根目录>/Import；面板优先")
     ap.add_argument("--traces", default=None,
                     help="路点存档路径；不给就用该场景目录里的 traces.json（每场景一份）")
     ap.add_argument("--port", type=int, default=8071)
@@ -973,19 +1054,33 @@ def main():
     root = os.path.abspath(os.path.expanduser(args.scan_root))
     if not os.path.isdir(root):
         raise SystemExit("扫描目录不存在：%s\n用 --scan-root 指到放 FBX 的地方" % root)
-    SCANS.update(root=root, cache=os.path.abspath(args.cache),
-                 blender=args.blender, maxtex=args.max_texture)
+    # 命令行只负责"给默认值播种"；deploy_config.json 里存了的以面板为准，
+    # 否则同一个值会有两个各说各话的来源（以前 --import-dir 就是）。
+    if args.blender:
+        TOOL_DEFAULTS["blender"] = args.blender
+    if args.max_texture:
+        TOOL_DEFAULTS["maxtex"] = str(args.max_texture)
+    if args.import_dir:
+        TOOL_DEFAULTS["import_dir"] = os.path.expanduser(args.import_dir)
+    cfg = load_config()
+    SCANS.update(root=root, cache=os.path.abspath(args.cache))
     SCANS["traces"] = os.path.abspath(args.traces) if args.traces else None
-    imp = os.path.abspath(os.path.expanduser(args.import_dir))
-    SCANS["import_dir"] = imp if os.path.isdir(imp) else None
-    if SCANS["import_dir"]:
+    imp = import_dir_of(cfg)
+    if imp:
         print("生成 xodr 时会把同名 fbx/xodr 配对放进 %s/<地图名>/" % imp)
-    elif args.import_dir:
-        print("导入目录 %s 不存在，跳过配对投放" % imp)
+    else:
+        print("投放目录 %s 不存在，生成时跳过配对投放（可在「⚙ 路径」里改）"
+              % (cfg["import_dir"] or os.path.join(cfg["carla_root"], "Import")))
+    try:
+        print("Blender：%s" % find_blender(cfg))
+    except SystemExit as e:
+        print("Blender：未找到 —— %s" % e)
 
     n = sum(1 for _ in glob.glob(os.path.join(root, "**", "*.fbx"), recursive=True))
     print("可加载的 FBX：%d 个（%s 之下）—— 启动不自动加载，去浏览器里点「加载数据」"
           % (n, root))
+    print("设置：%s（不存在则全用默认值，页面「⚙ 路径」可改）"
+          % (TOOL_CONFIG if os.path.isfile(TOOL_CONFIG) else "未创建"))
     print("\n浏览器打开  http://%s:%d" % (args.host, args.port))
     app.run(host=args.host, port=args.port, debug=False, threaded=True)
 

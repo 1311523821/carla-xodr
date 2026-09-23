@@ -729,6 +729,17 @@ async function refreshDeploy() {
   if (!j || !j.target) return;
   const none = j.state === "未导入";
   b.dataset.importCmd = j.import_cmd || "";
+  const bc = document.getElementById("btnCalib");
+  const c = j.calib;
+  bc.dataset.calib = c ? JSON.stringify(c) : "";
+  bc.classList.toggle("warn", !c || !c.calibrated);
+  bc.textContent = c && c.calibrated ? "⎘ 重新标定" : "⎘ 标定";
+  bc.title = !c ? "服务端没回 calib（编辑器进程偏旧，重启一次）"
+    : c.calibrated
+      ? "frame.json " + c.frame_json + " 已有标定解。重跑是更新解，"
+        + "需要 CARLA 正加载着这张图"
+      : "还没标定：「对齐检查」的 Δz 里混着未标定的偏移。命令要在 CARLA 把这张图 "
+        + "Play 起来之后跑，约几分钟";
   b.disabled = none;
   b.classList.toggle("warn", !none && j.state !== "一致");
   b.classList.toggle("ok", j.state === "一致");
@@ -736,9 +747,8 @@ async function refreshDeploy() {
     : j.state === "一致" ? "重新部署到 CARLA"
     : "部署到 CARLA（Content 里那份" + j.state + "）";
 }
-async function copyImport() {
-  const cmd = document.getElementById("btnDeploy").dataset.importCmd || "";
-  if (!cmd) return status("还没拿到命令：服务端没回 import_cmd（编辑器进程偏旧，重启一次）", true);
+async function copyCmd(cmd, note) {
+  if (!cmd) return status("还没拿到命令：服务端没回这个字段（编辑器进程偏旧，重启一次）", true);
   let ok = false;
   try { await navigator.clipboard.writeText(cmd); ok = true; } catch (e) { ok = false; }
   if (!ok) {
@@ -750,8 +760,26 @@ async function copyImport() {
     ta.remove();
   }
   // 两条都不成也要能拿到：命令原样摊在状态栏里，选中就能复制
-  status((ok ? "已复制：" : "剪贴板不可用，手动选中：") + cmd);
+  status((ok ? "已复制：" : "剪贴板不可用，手动选中：") + cmd + (note ? "　" + note : ""));
 }
+function copyImport() {
+  return copyCmd(document.getElementById("btnDeploy").dataset.importCmd || "");
+}
+function calib() {
+  const c = JSON.parse(document.getElementById("btnCalib").dataset.calib || "null");
+  if (!c) return copyCmd("", "");
+  // 这个按钮的重点不是复制，是提醒"该标定了吗、标定要什么前提"
+  // 标定残差常是 1e-5 量级，toFixed(3) 会打成 "0.000"，看着像没数
+  const rz = c.rmse_z_m == null ? "—"
+    : (Math.abs(c.rmse_z_m) < 0.0005 ? c.rmse_z_m.toExponential(1) : c.rmse_z_m.toFixed(3));
+  const done = c.calibrated && c.rmse_z_m != null
+    ? "已标定（rmse_z " + rz + " m、内点 " +
+      (100 * c.inlier_frac).toFixed(1) + "%），重跑是更新解"
+    : c.calibrated ? "已标定，重跑是更新解" : "还没标定：现在这份 Δz 里混着未标定的偏移";
+  return copyCmd(c.cmd, done + "。它要连 CARLA 服务端打一万多条同步射线（约几分钟），"
+    + "先把这张图在 UE 里 Play 起来再跑；跑完回页面重走「生成 xodr」→「对齐检查」");
+}
+
 async function deploy() {
   status("部署中…");
   const { j, err } = await jfetch("/api/deploy", { method: "POST" });
@@ -790,32 +818,50 @@ async function align() {
     new Date().toLocaleTimeString("zh-CN", { hour12: false });
   status("对齐检查: 最差 Δz RMSE=" + j.worst.toFixed(4) + " m（阈值 " + j.limit.toFixed(2) +
     "）" + (j.pass ? "通过" : "未通过") + "　A_S2W calibrated=" + j.calibrated +
-    "，用的 " + j.frame_json);
+    "，用的 " + j.frame_json +
+    (j.calibrated ? "" : "　→ 还没标定，这个 Δz 里混着扫描帧→world 的偏移。"
+      + "点「⎘ 标定」拿命令（要先在 UE 里把这张图 Play 起来），跑完重走「生成 xodr」→「对齐检查」"));
 }
 async function toggleCfg() {  const box = document.getElementById("deployCfg");
   box.hidden = !box.hidden;
   if (!box.hidden) await loadCfg();
 }
+// 面板字段 -> 配置键。加一项只要在这里加一行，读写和保存都走同一张表。
+const CFG = { cfgRoot: "carla_root", cfgImport: "import_dir", cfgPkg: "package",
+              cfgCache: "client_cache", cfgHost: "carla_host", cfgPort: "carla_port",
+              cfgBlender: "blender", cfgTex: "maxtex" };
+function cfgBody() {
+  const b = {};
+  for (const id in CFG) b[CFG[id]] = document.getElementById(id).value.trim();
+  return b;
+}
+function cfgShow(j) {
+  for (const id in CFG)
+    document.getElementById(id).value = j[CFG[id]] || (j.defaults || {})[CFG[id]] || "";
+  document.getElementById("cfgFile").textContent = j.file;
+  const pv = [];
+  if (j.preview) pv.push("部署到 → " + j.preview);
+  if (j.staged) pv.push("生成时投放到 → " + j.staged);
+  const el = document.getElementById("cfgPreview");
+  el.textContent = pv.join("\n") || "载入场景后可预览";
+  el.classList.toggle("err", (j.staged || "").includes("不存在"));
+  document.getElementById("cfgBlenderFound").textContent =
+    j.blender_found ? "Blender 找到：" + j.blender_found
+                    : "Blender 未找到 —— 要烘新场景前得填绝对路径";
+}
 async function loadCfg() {
   const { j, err } = await jfetch("/api/config");
   const msg = document.getElementById("cfgMsg");
   if (err) { msg.textContent = err; msg.className = "err"; return; }
-  document.getElementById("cfgRoot").value = j.carla_root;
-  document.getElementById("cfgPkg").value = j.package;
-  document.getElementById("cfgCache").value = j.client_cache;
-  document.getElementById("cfgFile").textContent = j.file;
-  document.getElementById("cfgPreview").textContent = "→ " + (j.preview || "载入场景后可预览");
+  cfgShow(j);
   msg.textContent = ""; msg.className = "dim";
 }
 async function saveCfg() {
-  const body = { carla_root: document.getElementById("cfgRoot").value,
-                 package: document.getElementById("cfgPkg").value,
-                 client_cache: document.getElementById("cfgCache").value };
   const msg = document.getElementById("cfgMsg");
   const { j, err } = await jfetch("/api/config", { method: "POST",
-    headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify(cfgBody()) });
   if (err || j.error) { msg.textContent = err || j.error; msg.className = "err"; return; }
-  document.getElementById("cfgPreview").textContent = "→ " + (j.preview || "");
+  cfgShow(j);
   msg.textContent = "已写入 " + j.saved; msg.className = "dim";
   refreshDeploy();
 }
@@ -828,6 +874,7 @@ document.getElementById("btnEmit").onclick = emit;
 document.getElementById("btnAlign").onclick = align;
 document.getElementById("btnDeploy").onclick = deploy;
 document.getElementById("btnImport").onclick = copyImport;
+document.getElementById("btnCalib").onclick = calib;
 document.getElementById("btnCfg").onclick = toggleCfg;
 document.getElementById("cfgSave").onclick = saveCfg;
 document.getElementById("showBand").onchange = draw;

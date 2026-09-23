@@ -8,7 +8,7 @@
       --obj .../out.obj --out .../<地图名>.fbx --scale 4
   # 或者从已经排好版的 .blend 里挑一个对象
   blender --background --python export_fbx.py -- \
-      --blend trace.blend --out .../TestMap.fbx [--object SCAN_MESH]
+      --blend trace.blend --out .../<地图名>.fbx [--object SCAN_MESH]
 
 **--obj 那条路径上的轴向参数是这次踩坑的根源，别改。** Blender 的 OBJ 导入器
 默认以为文件是 Y-up（forward=NEGATIVE_Z, up=Y），而 MindCloud 的 out.obj 是

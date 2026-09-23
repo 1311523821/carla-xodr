@@ -26,12 +26,17 @@
   <div class="grp">
     <span class="tag"><i>03</i>产出</span>
     <div class="ctl">
-      <button id="btnSave" class="primary">保存 traces.json</button>
-      <button id="btnEmit" class="primary">生成 xodr</button>
-      <button id="btnAlign">对齐检查</button>
-      <button id="btnDeploy">部署到 CARLA</button>
-      <button id="btnImport" title="复制 make import 命令，拿到终端自己跑（首次导入、或 FBX 换了才需要）">⎘ make import</button>
-      <button id="btnCfg" title="部署写到哪儿、缓存删哪儿">⚙ 路径</button>
+      <span class="sub"><span class="subtag" title="这一组是每次改完线都要走的，完整顺序见右侧栏「使用顺序」">每次</span>
+        <button id="btnSave" class="primary">保存 traces.json</button>
+        <button id="btnEmit" class="primary">生成 xodr</button>
+        <button id="btnAlign">对齐检查</button>
+        <button id="btnDeploy">部署到 CARLA</button></span>
+      <!-- make import 和标定是"首次/换扫描"才走的一次性岔路，不是第 5、6 步：
+           它们要在终端和 UE 里穿插着做，标完定还得回头重新生成一次。 -->
+      <span class="sub"><span class="subtag" title="这一组只在首次导入或换了扫描时走一次；跑完要回到「生成 xodr」重来一遍，见右侧栏「使用顺序」">首次</span>
+        <button id="btnImport" title="复制 make import 命令，拿到终端自己跑（首次导入、或 FBX 换了才需要）">⎘ make import</button>
+        <button id="btnCalib" title="复制 calibrate_frame 命令：标定扫描帧→world 的刚体，要在 CARLA 已经把这张图 Play 起来之后跑">⎘ 标定</button>
+        <button id="btnCfg" title="部署写到哪儿、缓存删哪儿">⚙ 路径</button></span>
     </div>
   </div>
 
@@ -73,18 +78,38 @@
     <h3>当前路属性</h3>
     <div id="props" class="dim">未选中</div>
 
-    <h3>部署设置</h3>
+    <h3>路径与设置</h3>
     <div id="deployCfg" hidden>
-      <label>CARLA 根目录<input id="cfgRoot" type="text" spellcheck="false"></label>
-      <label>关卡包名<input id="cfgPkg" type="text" spellcheck="false"
-             placeholder="留空 = 跟地图名相同"></label>
-      <label>客户端缓存根<input id="cfgCache" type="text" spellcheck="false"
-             placeholder="默认 ~/carlaCache"></label>
+      <p class="dim small">换台机器要改的就这些；<b>留空 = 用默认值</b>，保存后立即生效，不用重启。</p>
+      <fieldset><legend>CARLA 关卡目录</legend>
+        <label>CARLA 根目录<input id="cfgRoot" type="text" spellcheck="false"
+               placeholder="默认 ~/carla"></label>
+        <label>投放目录（生成时放配对 fbx/xodr）<input id="cfgImport" type="text" spellcheck="false"
+               placeholder="留空 = &lt;CARLA 根目录&gt;/Import"></label>
+        <label>关卡包名<input id="cfgPkg" type="text" spellcheck="false"
+               placeholder="留空 = 跟地图名相同"></label>
+        <label>客户端缓存根<input id="cfgCache" type="text" spellcheck="false"
+               placeholder="默认 ~/carlaCache"></label>
+      </fieldset>
+      <fieldset><legend>CARLA 服务端（标定时连）</legend>
+        <div class="grid2"><label>地址<input id="cfgHost" type="text" spellcheck="false"
+            placeholder="localhost"></label>
+          <label>端口<input id="cfgPort" type="text" inputmode="numeric" spellcheck="false"
+            placeholder="2000"></label></div>
+      </fieldset>
+      <fieldset><legend>烘焙工具</legend>
+        <label>Blender 可执行文件<input id="cfgBlender" type="text" spellcheck="false"
+               placeholder="留空 = 依次试 $BLENDER、which blender"></label>
+        <label>纹理上限（px）<input id="cfgTex" type="text" inputmode="numeric"
+               spellcheck="false" placeholder="1024"></label>
+        <div class="dim small" id="cfgBlenderFound"></div>
+      </fieldset>
       <div class="mono" id="cfgPreview"></div>
       <div id="cfgFoot"><button id="cfgSave" class="primary">保存</button>
         <span id="cfgMsg" class="dim"></span></div>
-      <p class="dim small">写进 <span id="cfgFile" class="mono"></span>，只影响「部署到 CARLA」
-        写哪儿、删哪儿；不动 <code>make import</code> 的 <code>--import-dir</code>。</p>
+      <p class="dim small">写进 <span id="cfgFile" class="mono"></span>（已在 <code>.gitignore</code>
+        里，不会被提交）。只影响「部署到 CARLA」「⎘ make import」「⎘ 标定」和烘纹理那一步；
+        不动 <code>make import</code> 本身的 <code>--package</code> 语义。</p>
     </div>
 
     <h3>实时诊断 <span id="diagAge" class="dim small"></span></h3>
@@ -93,6 +118,21 @@
     <h3>对齐检查 <span id="alignAge" class="dim small"></span></h3>
     <div id="align" class="dim">还没跑。它把 xodr 的路面高度逆映射回扫描帧，和网格上的地板
       逐点比 Δz —— 就是"车会不会悬空/陷进去"的预测量，约 3 秒，不需要服务端。</div>
+
+    <h3>使用顺序</h3>
+    <ol class="flow">
+      <li>「加载数据」选扫描 FBX</li>
+      <li>描线 →「保存 traces.json」</li>
+      <li>「生成 xodr」<span class="why">离线：拟合 + 发射 + 校验</span></li>
+      <li>「对齐检查」<span class="why">离线，不需要 CARLA 起着</span></li>
+      <li><b>只有首次</b>：「⎘ make import」复制命令去终端跑 → 回 UE 按 Play
+        <span class="why">它把 FBX 导成关卡，顺带烘一份 TM 采样表</span></li>
+      <li><b>首次 / 换了扫描</b>：「⎘ 标定」复制命令，在 CARLA 正加载着这张图时跑，
+        <b>跑完回到第 3 步重做一遍</b>
+        <span class="why">标定改的是扫描帧→world 的刚体，不重新生成，Δz 里还是旧偏移</span></li>
+      <li>「部署到 CARLA」→ 回 UE 重开一次 Play</li>
+      <li>以后只改描线/宽度：走 3 → 4 → 7 就够，<b>不用</b>再 make import、也不用重标定</li>
+    </ol>
 
     <h3>操作提示</h3>
     <ul class="hint">

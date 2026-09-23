@@ -97,7 +97,8 @@ def run(mesh, xodr, frame_json=None, step=0.5, lane=0):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--xodr", default="out/TestMap.xodr")
+    ap.add_argument("--xodr", required=True,
+                    help="要检查的 xodr，例如 cache/<场景>/out/<地图名>.xodr")
     ap.add_argument("--mesh", required=True)
     ap.add_argument("--frame-json", default=None,
                     help="默认取 mesh 所在场景目录的 frame.json")

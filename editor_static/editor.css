@@ -45,6 +45,9 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 .sub { display: flex; align-items: center; gap: 8px; flex: none;
   padding-left: 8px; border-left: 1px solid var(--line); }
 .sub:first-child { padding-left: 0; border-left: none; }
+/* 「每次」「首次」这种小标签是给按钮分组的，不是按钮的一部分 */
+.subtag { flex: none; font: 600 9.5px var(--mono); letter-spacing: .06em;
+  color: var(--mute); user-select: none; }
 
 button { display: inline-flex; align-items: center; gap: 5px; flex: none;
   background: #262b34; color: var(--fg); border: 1px solid var(--line);
@@ -129,9 +132,20 @@ h3 .small { float: right; font: 10px var(--mono); letter-spacing: 0; }
   border: 1px solid var(--line); border-radius: 3px; padding: 4px 6px;
   font: 12px var(--mono); }
 #props input:focus, #deployCfg input:focus { outline: none; border-color: var(--acc); }
-#cfgPreview { margin: 8px 0 4px; word-break: break-all; }
+#cfgPreview { margin: 10px 0 4px; word-break: break-all; white-space: pre-line;
+  font: 11px var(--mono); color: var(--dim); }
+#cfgPreview.err { color: var(--warn); }
 #cfgFoot { display: flex; align-items: center; gap: 8px; }
 #cfgMsg.err { color: var(--bad); }
+/* 设置面板分三节：路径 / 服务端 / 工具。留空一律等于"用默认值" */
+#deployCfg fieldset { margin: 10px 0 0; padding: 2px 9px 9px;
+  border: 1px solid var(--line); border-radius: 5px; }
+#deployCfg legend { padding: 0 4px; font: 600 10px var(--mono);
+  letter-spacing: .08em; color: var(--dim); }
+#deployCfg .small { line-height: 1.6; }
+#deployCfg b { color: var(--fg); font-weight: 600; }
+#deployCfg input::placeholder { color: #4d5563; }
+#cfgBlenderFound { margin-top: 6px; line-height: 1.5; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
 
 /* 诊断/对齐都是"读数"：标签走 sans 的暗色，数值走等宽的亮色，右对齐成表 */
@@ -145,6 +159,12 @@ h3 .small { float: right; font: 10px var(--mono); letter-spacing: 0; }
 ul.hint { margin: 0; padding-left: 18px; color: var(--dim); font-size: 11.5px; }
 ul.hint li { margin: 2px 0; }
 ul.hint b { color: var(--fg); font-weight: 600; }
+/* 使用顺序是真序列（第 5、6 步是一次性岔路），所以敢编号；
+   .why 是"这步为什么在这儿"，缩在条目下面一行，不打断读序。 */
+ol.flow { margin: 0; padding-left: 20px; font-size: 12px; color: var(--dim); }
+ol.flow li { margin: 5px 0; padding-left: 2px; }
+ol.flow b { color: var(--fg); font-weight: 600; }
+ol.flow .why { display: block; font-size: 11px; color: var(--mute); }
 
 /* ================================================== 状态栏：唯一反馈 == */
 /* 以前它是 position:fixed 浮在侧栏上（侧栏得靠 padding-bottom:30px 躲它）。

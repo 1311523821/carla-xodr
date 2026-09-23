@@ -24,6 +24,7 @@ export BLENDER=/opt/blender/blender        # 改成你的 Blender 可执行文�
 ```
 
 - **Blender**（3.6+ / 4.x / 5.x）只负责 FBX → GLB 的格式转换，不参与几何计算。
+  路径可以设 `$BLENDER`，也可以事后在编辑器「⚙ 路径」面板里填（面板优先）。
   不装也能用：只要 `cache/<场景>/scene.glb` 已存在，加载会走缓存。
 - **可选 `carla` PythonAPI**：装了之后 `validate.py` 用 CARLA 自己的解析器做离线闭环
   校验（不需要启动服务端），这是最有价值的一组检查；不装则跳过那几项，其余照常。
@@ -86,8 +87,48 @@ python3 trace_editor.py --port 8071
      橙 = Content 里那份已过期，绿 = 一致（此时按钮是「重新部署到 CARLA」）。
 10. **回 UE 重开一次 Play** —— 服务端在加载地图时才解析 xodr，不重启世界里的车道还是旧值。
 
-「⚙ 路径」把部署用的三个路径摊开给你改（CARLA 根目录 / 关卡包名 / 客户端缓存根），
-面板里实时预览解析出来的完整目标路径，存进 `deploy_config.json`，留空即默认。
+「⚙ 路径」把部署用的路径摊开给你改，存 `deploy_config.json`（已在 `.gitignore` 里），
+**保存后即时生效，不用重启服务端**。
+
+---
+
+## 换一台机器要改的东西
+
+凡是"换个人/换台机器就不成立"的值，一律不在源码里写死，都在「⚙ 路径」面板里，留空即用默认值：
+
+| 字段 | 默认值 | 什么时候要改 |
+|---|---|---|
+| CARLA 根目录 | `~/carla` | CARLA 不在这个位置 |
+| 投放目录 | `<CARLA 根目录>/Import` | 你的 `make import` 扫别的目录 |
+| 关卡包名 | 空 = 跟地图名同名 | 关卡放在独立包里 |
+| 客户端缓存根 | `$CARLA_CACHE_DIR` 或 `~/carlaCache` | 设过环境变量或换过位置 |
+| 服务端地址 / 端口 | `localhost` / `2000` | CARLA 不在同一台机器上。「⎘ 标定」复制出来的命令会带上这两个值 |
+| Blender 可执行文件 | 空 = 依次试 `$BLENDER`、`which blender`、`~/blender-*-linux-x64/` | 装在别处且不在 PATH 里 |
+| 纹理上限 | `1024` | 显存小就调低，源纹理清晰且显存大可调高 |
+
+面板底部实时显示**解析结果**（会部署到哪个文件、配对投到哪个目录、Blender 找没找到），
+填错了当场能看见；保存前逐项校验（端口范围、2 的幂、目录/文件是否存在），
+不合法直接红字退回，不会写坏配置。启动时服务端也会把 Blender 和投放目录的实际结果打出来。
+
+**代码里刻意没做成可配置的**：净空判定 `CLEAR_MIN=1.5 m`、平整容差 `FLAT_TOL`、底图分辨率
+`PPM=20`、每列表面层数 `COL_LAYERS`、拟合平滑上限、对齐验收阈值。这些一改，「通畅 / 需调整」
+和对齐的「通过 / 未通过」的**判定基准**就变了，两个场景之间的数字不再可比 —— 而这套工具的
+价值恰恰在数字可比。真要按场景调，改 `trace_editor.py` 顶部那几个常量，并记住之后的
+诊断结论不能和之前的对照。
+
+### 一个代码改不掉的坑：Python 版本
+
+`requirements.txt` 把 numpy 锁在 **1.21.5**（CARLA 的 PythonAPI 与 numpy 2.x 的 ABI 不兼容，
+实测装上 2.x 后 `import carla` 直接失败），而 numpy 1.21.5 只提供到 **Python 3.10** 的轮子。
+所以新机器上要用 `carla` 闭环校验和 open3d 这套，就得用 **Python 3.10**，别用 3.11+，
+否则 `pip install -r requirements.txt` 会试图从源码编译 numpy 并失败。
+
+```bash
+python3 --version           # 需要 3.10
+```
+
+不装 `carla` 也能跑大部分流程（`validate.py` 会跳过 carla 相关项，其余检查照常），
+但那时 numpy/open3d 仍是硬依赖，Python 版本这条限制照样在。
 
 ### 界面分区
 
@@ -95,7 +136,7 @@ python3 trace_editor.py --port 8071
 |---|---|
 | 工具栏 `01 场景` | 加载数据 |
 | 工具栏 `02 描线` | ＋新建路 · 删除当前路 · 撤销 |
-| 工具栏 `03 产出` | 保存 traces.json · 生成 xodr · 对齐检查 · 部署到 CARLA · ⎘ make import · ⚙ 路径 |
+| 工具栏 `03 产出` | **每次**：保存 traces.json · 生成 xodr · 对齐检查 · 部署到 CARLA ｜ **首次**：⎘ make import · ⎘ 标定 · ⚙ 路径 |
 | 工具栏 `视图` | 裁剪高于 · 车道宽度预览 / 米网格 / 显示被遮挡的路 · 显示纹理场景 / 3D 轨道查看 |
 | 画布左缘 | 裁剪 Z 标尺（帽 = 当前阈值读数，尺 = 拖动/滚轮） |
 | 右侧栏 | 道路列表 · 当前路属性 · 部署设置 · 实时诊断 · 对齐检查 · 操作提示 |
@@ -131,7 +172,7 @@ python3 trace_editor.py --port 8071
 ```bash
 python3 make_demo_trace.py traces.json     # 合成三条路：直 / 圆弧 / S 形
 python3 fit_geometry.py --out-dir out
-python3 emit_xodr.py --in-dir out --out-dir out
+python3 emit_xodr.py --in-dir out --out-dir out --map-name demo
 python3 validate.py --in-dir out           # 35~71 项检查，含 CARLA 真解析器闭环
 ```
 
@@ -175,7 +216,7 @@ python3 render_section.py --mesh $MESH --traces $TRACES --axis y --at <某条路
 
 # 3) 拟合 -> 发射 -> 校验 -> 对齐   （= 编辑器的「生成 xodr」+「对齐检查」）
 python3 fit_geometry.py --traces $TRACES --out-dir $OUT
-python3 emit_xodr.py --in-dir $OUT --out-dir $OUT
+python3 emit_xodr.py --in-dir $OUT --out-dir $OUT --map-name $MAP
 python3 validate.py --in-dir $OUT
 python3 check_alignment.py --mesh $MESH --xodr $OUT/$MAP.xodr
 

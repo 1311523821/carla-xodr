@@ -34,7 +34,7 @@
       <!-- make import 和标定是"首次/换扫描"才走的一次性岔路，不是第 5、6 步：
            它们要在终端和 UE 里穿插着做，标完定还得回头重新生成一次。 -->
       <span class="sub"><span class="subtag" title="这一组只在首次导入或换了扫描时走一次；跑完要回到「生成 xodr」重来一遍，见右侧栏「使用顺序」">首次</span>
-        <button id="btnImport" title="复制 make import 命令，拿到终端自己跑（首次导入、或 FBX 换了才需要）">⎘ make import</button>
+        <button id="btnImport" title="复制 make import 命令，拿到终端自己跑（首次导入、或 FBX 换了才需要）。命令里带了一句 rm -f Import/*.json —— 残留的包配置会让 make import 跳过扫描新放的地图、直接用旧的">⎘ make import</button>
         <button id="btnCalib" title="复制 calibrate_frame 命令：标定扫描帧→world 的刚体，要在 CARLA 已经把这张图 Play 起来之后跑">⎘ 标定</button>
         <button id="btnCfg" title="部署写到哪儿、缓存删哪儿">⚙ 路径</button></span>
     </div>
@@ -126,7 +126,9 @@
       <li>「生成 xodr」<span class="why">离线：拟合 + 发射 + 校验</span></li>
       <li>「对齐检查」<span class="why">离线，不需要 CARLA 起着</span></li>
       <li><b>只有首次</b>：「⎘ make import」复制命令去终端跑 → 回 UE 按 Play
-        <span class="why">它把 FBX 导成关卡，顺带烘一份 TM 采样表</span></li>
+        <span class="why">它把 FBX 导成关卡，顺带烘一份 TM 采样表。命令开头那句
+        <code>rm -f Import/*.json</code> 是必须的：残留的包配置会让它跳过扫描新放的地图、
+        静默导回上一版</span></li>
       <li><b>首次 / 换了扫描</b>：「⎘ 标定」复制命令，在 CARLA 正加载着这张图时跑，
         <b>跑完回到第 3 步重做一遍</b>
         <span class="why">标定改的是扫描帧→world 的刚体，不重新生成，Δz 里还是旧偏移</span></li>

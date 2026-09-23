@@ -227,7 +227,9 @@ python3 calibrate_frame.py --mesh $MESH --extent 60 --step 1.0 --write
 #    标定后必须重跑第 3 步，Δz 才是纯粹的拟合误差
 
 # 5) 首次导入 CARLA：视觉网格就是加载进来的那份 FBX，不用再导一次
-cd $CARLA_ROOT && make import ARGS="--package=$MAP"
+cd $CARLA_ROOT && rm -f Import/*.json && make import ARGS="--package=$MAP"
+#    前面那句 rm 是必须的：Import.py 只在 Import/ 下一个 .json 都没有时才扫描
+#    fbx/xodr 配对，跑过一次留下的 <包>.json 会让它直接用旧配置、不看新放的地图。
 
 # 6) 之后凡是只改了描线/宽度，走这一步就够，不用重新 make import：
 #    编辑器点「部署到 CARLA」，或者手工：

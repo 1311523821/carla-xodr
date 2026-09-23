@@ -832,7 +832,10 @@ def deploy_status(src_xodr, stem):
           "root": cfg["carla_root"], "package": pkg,
           # 首次没有关卡目录时部署无从下手，只能先让 CARLA 把 FBX 导成关卡。
           # 命令原样给出去，前端做成一键复制，省得回终端翻 README。
-          "import_cmd": 'cd %s && make import ARGS="--package=%s"'
+          # 前面那句 rm 不是可有可无的清理：Import.py:612-617 只在 Import/ 下一个
+          # .json 都没有时才扫描 fbx/xodr 配对，跑过一次留下的 <包>.json 会让它直接用
+          # 旧配置、根本不看新放的地图 —— 少了这步，重导会静默导回上一版。
+          "import_cmd": 'cd %s && rm -f Import/*.json && make import ARGS="--package=%s"'
                         % (cfg["carla_root"], pkg),
           "calib": calib_status(),
           "state": "未导入"}

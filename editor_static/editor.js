@@ -743,9 +743,16 @@ async function refreshDeploy() {
   b.disabled = none;
   b.classList.toggle("warn", !none && j.state !== "一致");
   b.classList.toggle("ok", j.state === "一致");
-  b.textContent = none ? "部署到 CARLA（还没 make import）"
+  // 发布版 CARLA 里没有 Util/BuildTools，也就没有 make import：这句命令复制出去
+  // 也是一条跑不通的命令。此时按钮改成只说缺什么，而不是让人复制完再撞墙。
+  const pkgOnly = j.layout === "package";
+  b.textContent = pkgOnly ? "部署到 CARLA（这份是发布版，先手工建关卡）"
+    : none ? "部署到 CARLA（还没 make import）"
     : j.state === "一致" ? "重新部署到 CARLA"
     : "部署到 CARLA（Content 里那份" + j.state + "）";
+  if (pkgOnly)
+    b.title = "「⚙ 路径」里指的 CARLA 根目录是发布版（有 CarlaUE4/、没有 Util/BuildTools），"
+      + "它没有 make import 可用 —— 关卡得用别的办法建好，再回来点「部署到 CARLA」";
 }
 async function copyCmd(cmd, note) {
   if (!cmd) return status("还没拿到命令：服务端没回这个字段（编辑器进程偏旧，重启一次）", true);
@@ -846,11 +853,18 @@ function cfgShow(j) {
     document.getElementById(id).value = j[CFG[id]] || (j.defaults || {})[CFG[id]] || "";
   document.getElementById("cfgFile").textContent = j.file;
   const pv = [];
+  // 解析出来的根目录要明写：输入框里是原始字符串（可能是 ~/carla），
+  // 而真正决定写到哪的是展开后的绝对路径，两者不一致时只有这里看得出来。
+  if (j.root_resolved)
+    pv.push("CARLA 根目录 → " + j.root_resolved +
+            (j.layout === "source" ? "（源码版，可 make import）"
+             : j.layout === "package" ? "（发布版，没有 make import）"
+             : "　⚠ 不像 CARLA 根目录，去改上面那一栏"));
   if (j.preview) pv.push("部署到 → " + j.preview);
   if (j.staged) pv.push("生成时投放到 → " + j.staged);
   const el = document.getElementById("cfgPreview");
   el.textContent = pv.join("\n") || "载入场景后可预览";
-  el.classList.toggle("err", (j.staged || "").includes("不存在"));
+  el.classList.toggle("err", (j.staged || "").includes("不存在") || !j.layout);
   document.getElementById("cfgBlenderFound").textContent =
     j.blender_found ? "Blender 找到：" + j.blender_found
                     : "Blender 未找到 —— 要烘新场景前得填绝对路径";

@@ -100,7 +100,7 @@ python3 trace_editor.py --port 8071
 
 | 字段 | 默认值 | 什么时候要改 |
 |---|---|---|
-| CARLA 根目录 | `~/carla` | CARLA 不在这个位置 |
+| CARLA 根目录 | `$CARLA_ROOT`，再不然 `~/carla` | CARLA 不在这个位置。面板、`--carla-root`、环境变量三处都能给，优先级见下 |
 | 投放目录 | `<CARLA 根目录>/Import` | 你的 `make import` 扫别的目录 |
 | 关卡包名 | 空 = 跟地图名同名 | 关卡放在独立包里 |
 | 客户端缓存根 | `$CARLA_CACHE_DIR` 或 `~/carlaCache` | 设过环境变量或换过位置 |
@@ -111,6 +111,24 @@ python3 trace_editor.py --port 8071
 面板底部实时显示**解析结果**（会部署到哪个文件、配对投到哪个目录、Blender 找没找到），
 填错了当场能看见；保存前逐项校验（端口范围、2 的幂、目录/文件是否存在），
 不合法直接红字退回，不会写坏配置。启动时服务端也会把 Blender 和投放目录的实际结果打出来。
+
+**根目录的优先级**：面板里存的 > `--carla-root` > `$CARLA_ROOT` > `~/carla`。留空即用默认值，
+面板里存过的值优先 —— 后三个都只是"第一次启动时把默认值播种进去"，不覆盖已存的配置。
+
+**"是目录"不等于"是 CARLA"**。面板会按两种装法认根目录：
+
+| 装法 | 判据 | Content 在哪 | 有 make import 吗 |
+|---|---|---|---|
+| 源码版 | 有 `Util/BuildTools/Import.py` | `<根>/Unreal/CarlaUE4/Content` | 有 |
+| 发布版 | 有 `CarlaUE4/Content` | `<根>/CarlaUE4/Content` | **没有** —— 关卡得用别的办法建 |
+
+两种都对；但`~/carla` 和 `~/carla-01` 并存时，指错的那个**也存在**，只是 Content 在
+另一棵树里 —— 于是地图会被静默投进另一份 CARLA。所以保存时两项都不像就直接红字退回
+（要填的是 CARLA 的根目录，不是 `Unreal/` 或 `CarlaUE4/` 那一层），而不是等部署完才发现。
+发布版那栏会让「部署到 CARLA」按钮明说"这份没有 make import"。
+
+真要手写 `deploy_config.json` 绕过面板校验是可以的 —— `load_config` 不做检查，
+第三种布局就靠这条路。
 
 **代码里刻意没做成可配置的**：净空判定 `CLEAR_MIN=1.5 m`、平整容差 `FLAT_TOL`、底图分辨率
 `PPM=20`、每列表面层数 `COL_LAYERS`、拟合平滑上限、对齐验收阈值。这些一改，「通畅 / 需调整」

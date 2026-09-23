@@ -22,6 +22,7 @@ import io
 import json
 import math
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -42,7 +43,9 @@ from mesh_field import FloorField     # noqa: E402
 from probe_clearance import probe_line  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CARLA_IMPORT_PARENT = os.path.expanduser("~/carla")
+# 默认 CARLA 根目录。它只是**默认值**，优先级：面板存的 > --carla-root > $CARLA_ROOT > 这里。
+# 名字里不要带 IMPORT：它当 carla_root 整体用，不是"Import 的父目录"。
+CARLA_ROOT_DEFAULT = os.path.expanduser("~/carla")
 STATIC = os.path.join(HERE, "editor_static")
 PPM = 20.0                    # 底图分辨率：像素/米
 COL_LAYERS = 8                # 每列最多取几个表面
@@ -88,8 +91,8 @@ def find_blender(cfg):
     最后那层通配只是"本机解压成 ~/blender-*-linux-x64 时能自动中"的便利，
     换台机器不成立，所以真找不到就明说去哪儿填，而不是猜一个路径。"""
     for p in (cfg.get("blender"), os.environ.get("BLENDER"), shutil.which("blender")):
-        if p and os.path.exists(p):
-            return p
+        if p and os.path.exists(cfg_path(p)):
+            return cfg_path(p)
     hits = sorted(glob.glob(os.path.expanduser("~/blender-*-linux-x64/blender")))
     if hits:
         return hits[-1]
@@ -719,7 +722,9 @@ def emit_paths():
 # 规则：**命令行参数只是给默认值播种，面板里存的优先** —— 同一个值不能有两个
 # 各说各话的来源（以前 --import-dir 和面板里的"CARLA 根目录"就是各管一半）。
 TOOL_DEFAULTS = {
-    "carla_root": CARLA_IMPORT_PARENT,               # 源码构建的 CARLA 根目录
+    # $CARLA_ROOT 与 $CARLA_CACHE_DIR 对称：无头/CI 里没有面板可点，
+    # 少了它，"换台机器"里唯一只能手写 deploy_config.json 的就是这一项。
+    "carla_root": os.environ.get("CARLA_ROOT") or CARLA_ROOT_DEFAULT,
     "import_dir": "",                                # 空 = <carla_root>/Import
     "package": "",                                   # 空 = 跟地图名同名
     "client_cache": os.environ.get("CARLA_CACHE_DIR")
@@ -740,20 +745,55 @@ def load_config():
     return cfg
 
 
+def cfg_path(v):
+    """配置里的一个路径值 -> 绝对路径。**expanduser 只在这一个地方做。**
+
+    以前 carla_target 展开了、deploy_status/api_deploy 没展开：面板里填 ~/carla 时
+    实际部署到 /home/u/carla/…，侧栏却显示 ../../../carla/…（校验用展开值、显示用原值）。
+    同一个值两套解释，回显和事实就会分叉 —— 面板存在的意义就是让回显可信。
+    """
+    return os.path.abspath(os.path.expanduser(str(v).strip()))
+
+
+def carla_layout(root):
+    """这个根目录像哪种 CARLA 装法，或 None（不像 CARLA）。
+
+    两种装法的 Content 位置不同，所以"根目录对不对"不能只看目录存不存在：
+      source   <root>/Unreal/CarlaUE4/Content，且有 Util/BuildTools/Import.py（能 make import）
+      package  <root>/CarlaUE4/Content（发布版，没有 make import，关卡得在别处生成）
+    ~/carla 与 ~/carla-01 并存时，指错的那个照样"存在"，于是把地图静默投进另一棵树。
+    """
+    if os.path.isfile(os.path.join(root, "Util", "BuildTools", "Import.py")):
+        return "source"
+    if os.path.isdir(os.path.join(root, "CarlaUE4", "Content")):
+        return "package"
+    return None
+
+
+def content_dir(root):
+    """<root> 下的 Content 目录，按实际布局选。
+
+    两种布局都不像时按源码布局给一个路径：没构建过的 CARLA 检出是正常的前置状态，
+    这里不报错，交给调用方按"目录不存在"去说。
+    """
+    if carla_layout(root) == "package":
+        return os.path.join(root, "CarlaUE4", "Content")
+    return os.path.join(root, "Unreal", "CarlaUE4", "Content")
+
+
 def import_dir_of(cfg=None):
     """生成 xodr 时同名配对投到哪儿。目录不存在就返回 None（跳过投放，不报错）。"""
     cfg = cfg or load_config()
-    d = os.path.expanduser(cfg["import_dir"]
-                           or os.path.join(cfg["carla_root"], "Import"))
+    d = (cfg_path(cfg["import_dir"]) if cfg["import_dir"]
+         else os.path.join(cfg_path(cfg["carla_root"]), "Import"))
     return d if os.path.isdir(d) else None
-
 
 
 def carla_target(stem, cfg=None):
     """`make import` 给这张图建出来的关卡目录。"""
     cfg = cfg or load_config()
-    maps = os.path.join(os.path.expanduser(cfg["carla_root"]), "Unreal", "CarlaUE4",
-                        "Content", cfg["package"] or stem, "Maps", stem)
+    maps = os.path.join(content_dir(cfg_path(cfg["carla_root"])),
+                        cfg["package"] or stem, "Maps", stem)
     return {"maps": maps,
             "xodr": os.path.join(maps, "OpenDrive", stem + ".xodr"),
             "tm": os.path.join(maps, "TM", stem + ".bin")}
@@ -781,10 +821,13 @@ def client_cache_dirs(stem, cfg=None):
     包名等于地图名，所以一直没暴露。
     """
     cfg = cfg or load_config()
-    root = os.path.expanduser(cfg["client_cache"] or TOOL_DEFAULTS["client_cache"])
+    root = cfg_path(cfg["client_cache"] or TOOL_DEFAULTS["client_cache"])
     pkg = cfg["package"] or stem
-    return [d for d in sorted(glob.glob(os.path.join(root, "*", pkg, "Maps", stem)))
-            if os.path.isdir(d)]
+    # 只有 <客户端版本> 那一段是通配，包名和地图名是**字面量**，必须转义：
+    # 含 [ ] ? * 的地图名（如 map[1].fbx）会让整条 glob 匹配不到任何目录，
+    # 于是"部署成功"却把陈旧采样表留在原地 —— 正是上面那段 139 的成因。
+    pat = os.path.join(root, "*", glob.escape(pkg), "Maps", glob.escape(stem))
+    return [d for d in sorted(glob.glob(pat)) if os.path.isdir(d)]
 
 
 def client_cache_files(stem, cfg=None, sub=None):
@@ -813,9 +856,14 @@ def calib_status():
     return {
         # host/port 显式写进命令：默认值 localhost:2000 是"服务端在同一台机器"的
         # 假设，换个人/换台机器不成立，让复制命令的人自己去猜连不上是因为啥不值当。
+        # 逐项 shlex.quote：这条命令是要**粘进终端执行**的，而 host/port 是面板里
+        # 手输的自由文本（以前只查了非空、端口查了范围，没有字符集限制）——
+        # 一个 `--host 'h; rm -rf ~'` 就会在粘贴时变成两条命令。
+        # quote 之后值里的空格/分号/反引号都只是普通字符，不会被执行。
         "cmd": ("cd %s && python3 calibrate_frame.py --mesh %s --host %s --port %s"
                 " --extent 60 --step 1.0 --write"
-                % (HERE, os.path.relpath(mesh, HERE), cfg["carla_host"], cfg["carla_port"])),
+                % (shlex.quote(HERE), shlex.quote(os.path.relpath(mesh, HERE)),
+                   shlex.quote(cfg["carla_host"]), shlex.quote(cfg["carla_port"]))),
         "frame_json": os.path.relpath(fjp, HERE),
         "calibrated": bool(acc.get("calibrated")),
         "rmse_z_m": m.get("rmse_z_m"), "inlier_frac": m.get("inlier_frac"),
@@ -826,17 +874,23 @@ def calib_status():
 def deploy_status(src_xodr, stem):
     """不改任何东西，只回答"CARLA 里那份跟你刚生成的是不是同一个"。"""
     cfg = load_config()
+    root = cfg_path(cfg["carla_root"])
     t = carla_target(stem, cfg)
     pkg = cfg["package"] or stem
-    st = {"target": os.path.relpath(t["xodr"], cfg["carla_root"]),
-          "root": cfg["carla_root"], "package": pkg,
+    st = {"target": os.path.relpath(t["xodr"], root),
+          "root": root, "package": pkg,
+          # 布局给出去：package 版没有 Util/BuildTools，也就没有 make import，
+          # 前端据此把那句命令标成"这份 CARLA 里没有"而不是让人复制完才发现。
+          "layout": carla_layout(root),
           # 首次没有关卡目录时部署无从下手，只能先让 CARLA 把 FBX 导成关卡。
           # 命令原样给出去，前端做成一键复制，省得回终端翻 README。
           # 前面那句 rm 不是可有可无的清理：Import.py:612-617 只在 Import/ 下一个
           # .json 都没有时才扫描 fbx/xodr 配对，跑过一次留下的 <包>.json 会让它直接用
           # 旧配置、根本不看新放的地图 —— 少了这步，重导会静默导回上一版。
-          "import_cmd": 'cd %s && rm -f Import/*.json && make import ARGS="--package=%s"'
-                        % (cfg["carla_root"], pkg),
+          # 命令是要**粘进终端执行**的，两个值都 shlex.quote：包名来自面板自由文本、
+          # 根目录可能带空格。不转义时 `--package=x"; rm -rf ~; #` 就是两条命令。
+          "import_cmd": 'cd %s && rm -f Import/*.json && make import ARGS=%s'
+                        % (shlex.quote(root), shlex.quote("--package=" + pkg)),
           "calib": calib_status(),
           "state": "未导入"}
     if not os.path.isdir(os.path.dirname(t["xodr"])):
@@ -905,7 +959,7 @@ def api_deploy():
         out = deploy_to_carla(xodr, stem)
     except (SystemExit, OSError) as e:
         return jsonify({"error": str(e)}), 400
-    root = load_config()["carla_root"]
+    root = cfg_path(load_config()["carla_root"])
     out["map"] = stem
     out["target"] = os.path.relpath(out["xodr"], root)
     out["xodr"] = os.path.relpath(out["xodr"], HERE)
@@ -927,10 +981,14 @@ def api_config():
             found = find_blender(c)          # 空值也要解析一遍：面板要能回答
         except SystemExit:                    # "这台机器上烘得了吗"
             found = None
+        root = cfg_path(c["carla_root"])
         return dict(c, file=os.path.relpath(TOOL_CONFIG, HERE), map=stem,
                     defaults=TOOL_DEFAULTS,
                     staged=import_dir_of(c) or "（目录不存在，生成时跳过投放）",
                     blender_found=found,
+                    # 解析出来的绝对路径和布局都给前端：只回显原始字符串的话，
+                    # 填了 ~/xxx 的人看不到它到底落在哪，也就看不出填错了。
+                    root_resolved=root, layout=carla_layout(root),
                     preview=carla_target(stem, c)["xodr"] if stem else None)
 
     if request.method == "GET":
@@ -940,10 +998,19 @@ def api_config():
             cfg[k] = str(request.json[k]).strip()
     if cfg["package"] and ("/" in cfg["package"] or ".." in cfg["package"]):
         return jsonify({"error": "包名不能含路径分隔符：%s" % cfg["package"]}), 400
-    root = os.path.expanduser(cfg["carla_root"])
+    root = cfg_path(cfg["carla_root"])
     if not os.path.isdir(root):
         return jsonify({"error": "CARLA 根目录不存在：%s" % root}), 400
-    if cfg["import_dir"] and not os.path.isdir(os.path.expanduser(cfg["import_dir"])):
+    # 存在 ≠ 是 CARLA。~/carla（源码版）和 ~/carla-01（发布版）并存时，指错的那个
+    # 照样能过上一关，于是地图被静默投进另一棵树 —— 这里当场退回，不等部署那步。
+    # 只是"不像"就拒绝是有依据的：两种布局的 Content 位置不同，猜不出该往哪写；
+    # 而 load_config 不做校验，真遇到第三种布局还能手写 deploy_config.json 绕过面板。
+    if carla_layout(root) is None:
+        return jsonify({"error": "这不像 CARLA 根目录：%s —— 底下既没有 "
+                                 "Util/BuildTools/Import.py（源码版），也没有 "
+                                 "CarlaUE4/Content（发布版）。要填的是 CARLA 的根目录，"
+                                 "不是 Unreal/ 或 CarlaUE4/ 那一层" % root}), 400
+    if cfg["import_dir"] and not os.path.isdir(cfg_path(cfg["import_dir"])):
         return jsonify({"error": "投放目录不存在：%s（留空 = 用 <CARLA 根目录>/Import）"
                                   % cfg["import_dir"]}), 400
     if not cfg["carla_host"]:
@@ -961,7 +1028,9 @@ def api_config():
         return jsonify({"error": "纹理上限得是 128 及以上的 2 的幂（如 512/1024/2048），"
                                  "现在是 %r" % cfg["maxtex"]}), 400
     cfg["maxtex"] = str(tex)
-    if cfg["blender"] and not os.path.isfile(os.path.expanduser(cfg["blender"])):
+    # 必须用 cfg_path：以前这里 expanduser 了、find_blender 没有，于是面板里填
+    # ~/blender/blender 能通过校验，到烘焙那步却报"找不到 Blender"。
+    if cfg["blender"] and not os.path.isfile(cfg_path(cfg["blender"])):
         return jsonify({"error": "Blender 可执行文件不存在：%s（留空 = 自动找）"
                                   % cfg["blender"]}), 400
     out = {k: cfg[k] for k in TOOL_DEFAULTS}
@@ -1029,8 +1098,8 @@ def api_emit():
         return jsonify({"error": "%s: %s" % (type(e).__name__, e),
                         "trace": traceback.format_exc()}), 500
     return jsonify({"ok": True, "files": files, "reports": reps,
-                "staged": os.path.relpath(staged, os.path.expanduser(
-                    load_config()["carla_root"])) if staged else None,
+                "staged": os.path.relpath(
+                    staged, cfg_path(load_config()["carla_root"])) if staged else None,
                 "carla_parse_ok": parse_ok, "checks": checks,
                 "frame_note": frame_note,
                 "deploy": deploy_status(xodr, stem)})
@@ -1071,6 +1140,9 @@ def main():
     ap.add_argument("--import-dir", default=None,
                     help="生成 xodr 时把同名 fbx/xodr 配对放进去的目录，"
                          "默认 <CARLA 根目录>/Import；面板优先")
+    ap.add_argument("--carla-root", default=None,
+                    help="CARLA 根目录（源码版含 Util/BuildTools，发布版含 CarlaUE4）；"
+                         "不填则依次试 $CARLA_ROOT、~/carla。面板里存过的优先")
     ap.add_argument("--traces", default=None,
                     help="路点存档路径；不给就用该场景目录里的 traces.json（每场景一份）")
     ap.add_argument("--port", type=int, default=8071)
@@ -1088,15 +1160,25 @@ def main():
         TOOL_DEFAULTS["maxtex"] = str(args.max_texture)
     if args.import_dir:
         TOOL_DEFAULTS["import_dir"] = os.path.expanduser(args.import_dir)
+    if args.carla_root:
+        TOOL_DEFAULTS["carla_root"] = args.carla_root
     cfg = load_config()
     SCANS.update(root=root, cache=os.path.abspath(args.cache))
     SCANS["traces"] = os.path.abspath(args.traces) if args.traces else None
+    # 根目录和布局都打出来：这是"部署会写进哪棵树"唯一的启动期证据。
+    # 指错时（比如指到没构建过的检出、或指到另一份 CARLA）能当场看见，
+    # 而不是等到部署那步才发现地图进了别的目录。
+    croot = cfg_path(cfg["carla_root"])
+    lay = carla_layout(croot)
+    print("CARLA 根目录：%s（%s）" % (
+        croot, {"source": "源码版，可 make import", "package": "发布版，没有 make import",
+                None: "⚠ 不像 CARLA 根目录 —— 在「⚙ 路径」里改"}[lay]))
     imp = import_dir_of(cfg)
     if imp:
         print("生成 xodr 时会把同名 fbx/xodr 配对放进 %s/<地图名>/" % imp)
     else:
         print("投放目录 %s 不存在，生成时跳过配对投放（可在「⚙ 路径」里改）"
-              % (cfg["import_dir"] or os.path.join(cfg["carla_root"], "Import")))
+              % (cfg["import_dir"] or os.path.join(croot, "Import")))
     try:
         print("Blender：%s" % find_blender(cfg))
     except SystemExit as e:

@@ -29,13 +29,20 @@ def resample(pts, ds=0.25):
     return np.stack([np.interp(t, s, a[:, k]) for k in range(3)], axis=1)
 
 
-def probe_line(field, pts, half_width, clearance_min, flat_tol, ds=0.25):
-    """返回 (通过率, 最差样本, 问题列表)。"""
+def probe_line(field, pts, half_width, clearance_min, flat_tol,
+               ds=0.25, lateral_step=0.25):
+    """返回 (通过率, 最差样本, 问题列表)。
+
+    ds / lateral_step 控制采样密度。实时诊断可加大步长（例如 ds=1、
+    lateral_step=half_width → 只采中心+左右边缘）以换速度；生成前再用默认密采样。
+    """
     P = resample(pts, ds)
     hd = np.gradient(P[:, 1], P[:, 0])
     ang = np.arctan2(hd, np.ones(len(hd)))
     # 横向采样点：法向 = (-sin, cos)
-    offs = np.linspace(-half_width, half_width, 2 * int(half_width / 0.25) + 1)
+    step = max(float(lateral_step), 1e-6)
+    offs = np.linspace(-half_width, half_width,
+                       max(2 * int(half_width / step) + 1, 3))
     bad_floor = bad_flat = bad_clear = 0
     worst = (0.0, None)
     n = len(P)

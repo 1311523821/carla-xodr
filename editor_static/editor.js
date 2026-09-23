@@ -10,6 +10,9 @@ let sel = null;                 // {ri, pi}
 let view = { s: 1, ox: 0, oy: 0 };
 let reports = {}, drag = null, undoStack = [];
 let dirty = false, lastCheck = 0, savedJson = "[]";
+// 脏路增量诊断：只重算改过的路。liveDiag 关掉后加点不再自动请求。
+let dirtyRoadIds = new Set();
+let checkTimer = null, checkAbort = null, checkVer = 0;
 
 const COLORS = ["#4da3ff", "#ff6ec7", "#7ee787", "#ffd166", "#c792ea",
                 "#5dd9d9", "#f97583", "#b3de6f", "#ff9f2e", "#a5d6ff"];
@@ -267,10 +270,27 @@ function undo() {
   // resampleAll 不能漏：draw() 读的是 SAMP 里的采样（折线/车道带/标签都按它画），
   // 只有顶点圈是直接读 r.points。少了这一句，撤销之后线还是撤销前那一版，
   // 而顶点已经在旧位置 —— 同一帧里两套东西对不上，/api/occlusion 也会拿旧采样去问。
-  syncDirty(); resampleAll(); renderSide(); draw(); scheduleCheck();
-}
-function markDirty() {
   syncDirty(); resampleAll();
+  // 撤销可能动到多条路，整表标脏；已删掉的路清掉报告。
+  pruneReports(); markRoadsDirty(roads.map(r => r.id));
+  renderSide(); draw(); scheduleCheck();
+}
+function markRoadsDirty(ids) {
+  for (const id of ids) if (id != null) dirtyRoadIds.add(id);
+}
+function pruneReports() {
+  const keep = new Set(roads.map(r => r.id));
+  for (const id of Object.keys(reports)) {
+    if (!keep.has(Number(id))) delete reports[id];
+  }
+  for (const id of [...dirtyRoadIds]) {
+    if (!keep.has(id)) dirtyRoadIds.delete(id);
+  }
+}
+function markDirty(roadIds) {
+  syncDirty(); resampleAll();
+  if (roadIds == null) markRoadsDirty(roads.map(r => r.id));
+  else markRoadsDirty(Array.isArray(roadIds) ? roadIds : [roadIds]);
   status(dirty ? "有未保存改动" : "已改回存档里那一版"); scheduleCheck();
 }
 
@@ -301,7 +321,7 @@ cv.addEventListener("mousedown", e => {
       roads[hs.ri].points.splice(hs.at, 0, { x, y });
       sel = { ri: hs.ri, pi: hs.at };
       activeId = roads[hs.ri].id;
-      markDirty(); renderSide(); draw(); return;
+      markDirty(activeId); renderSide(); draw(); return;
     }
   }
   if (activeId == null) return status("先点右侧列表选一条路，或按「新建路」");
@@ -311,7 +331,7 @@ cv.addEventListener("mousedown", e => {
   const [x, y] = s2w(sx, sy);
   r.points.push({ x, y });
   sel = { ri: roads.indexOf(r), pi: r.points.length - 1 };
-  markDirty(); renderSide(); draw();
+  markDirty(activeId); renderSide(); draw();
 });
 
 window.addEventListener("mousemove", e => {
@@ -331,7 +351,7 @@ window.addEventListener("mousemove", e => {
     if (!drag.moved) { snapshot(); drag.moved = true; }
     const [x, y] = s2w(sx, sy);
     roads[drag.ri].points[drag.pi] = { x, y };
-    markDirty(); draw();
+    markDirty(roads[drag.ri].id); draw();
   }
 });
 
@@ -355,8 +375,9 @@ window.addEventListener("keydown", e => {
   else if (e.key === "Delete" || e.key === "Backspace") {
     if (!sel) return;
     snapshot();
+    const rid = roads[sel.ri].id;
     roads[sel.ri].points.splice(sel.pi, 1);
-    sel = null; markDirty(); renderSide(); draw();
+    sel = null; markDirty(rid); renderSide(); draw();
   } else if (e.key === "n" || e.key === "N") { newRoad(); }
   else if (e.key === "Escape") { sel = null; draw(); }
 });
@@ -367,16 +388,21 @@ function newRoad() {
   const id = roads.length ? Math.max(...roads.map(r => r.id)) + 1 : 1;
   roads.push({ id, name: "road_" + String(id).padStart(4, "0"), points: [],
                width_left: 1.1, width_right: 1.1, speed_kmh: 5, link_next: null });
-  activeId = id; sel = null; markDirty(); renderSide(); draw();
+  activeId = id; sel = null; markDirty(id); renderSide(); draw();
   status("已建 road " + id + "，在图上左键点击开始描线");
 }
 
 function delRoad() {
   if (activeId == null) return status("没选中路");
   snapshot();
+  const gone = activeId;
   roads = roads.filter(r => r.id !== activeId);
+  delete reports[gone];
+  dirtyRoadIds.delete(gone);
   activeId = roads.length ? roads[0].id : null;
-  sel = null; markDirty(); renderSide(); draw();
+  sel = null; syncDirty(); resampleAll(); renderSide(); draw();
+  document.getElementById("diagAge").textContent = "";
+  renderDiag();
 }
 
 // 客户端点只有 x,y（s/z 由服务端反推）。这里算的是纯显示用的平面折线长，
@@ -430,8 +456,13 @@ function renderSide() {
     else if (["width_left", "width_right", "speed_kmh"].includes(k)) v = parseFloat(v);
     else if (k === "link_next") v = v === "" ? null : parseInt(v, 10);
     r[k] = v;
-    if (k === "id") activeId = v;
-    markDirty(); renderSide(); draw();
+    if (k === "id") {
+      // id 改了：旧报告键失效，新旧都标脏
+      delete reports[activeId];
+      dirtyRoadIds.delete(activeId);
+      activeId = v;
+    }
+    markDirty(r.id); renderSide(); draw();
   });
 }
 function fld(k, v, type, min, step, ph) {
@@ -441,49 +472,114 @@ function fld(k, v, type, min, step, ph) {
 }
 
 // ---------------------------------------------------------------- 诊断 --
-let checkTimer = null;
-function scheduleCheck() {
-  clearTimeout(checkTimer);
-  document.getElementById("diagAge").textContent = "计算中…";
-  checkTimer = setTimeout(runCheck, 550);
+function liveDiagOn() {
+  const el = document.getElementById("liveDiag");
+  return !el || el.checked;
 }
-async function runCheck() {
-  const sendable = roads.filter(r => r.points.length >= 2);
-  if (!sendable.length) {
-    reports = {}; document.getElementById("diag").innerHTML =
-      '<span class="dim small">每条路至少 2 个点才会诊断</span>';
-    document.getElementById("diagAge").textContent = ""; draw(); return;
+function scheduleCheck() {
+  if (!liveDiagOn()) {
+    document.getElementById("diagAge").textContent =
+      dirtyRoadIds.size ? "实时已关（有未诊断改动）" : "";
+    return;
   }
+  // <2 点的路诊不了，先清掉，避免空转"计算中…"
+  for (const id of [...dirtyRoadIds]) {
+    const r = roads.find(x => x.id === id);
+    if (!r || r.points.length < 2) dirtyRoadIds.delete(id);
+  }
+  const ids = [...dirtyRoadIds];
+  clearTimeout(checkTimer);
+  if (!ids.length) return;
+  document.getElementById("diagAge").textContent =
+    "诊断 road " + ids.join(",") + "…";
+  checkTimer = setTimeout(() => runCheck("lite"), 550);
+}
+async function runCheck(mode, allRoads) {
+  mode = mode || "lite";
+  const wantAll = !!allRoads || mode === "full";
+  let targets;
+  if (wantAll) {
+    targets = roads.filter(r => r.points.length >= 2);
+  } else {
+    targets = roads.filter(r => dirtyRoadIds.has(r.id) && r.points.length >= 2);
+  }
+  // 不够 2 点的脏路：没有可诊断内容，直接从脏集合拿掉，避免永远"有未诊断改动"
+  for (const id of [...dirtyRoadIds]) {
+    const r = roads.find(x => x.id === id);
+    if (!r || r.points.length < 2) dirtyRoadIds.delete(id);
+  }
+  if (!targets.length) {
+    if (!Object.keys(reports).length)
+      document.getElementById("diag").innerHTML =
+        '<span class="dim small">每条路至少 2 个点才会诊断</span>';
+    document.getElementById("diagAge").textContent = "";
+    draw();
+    return;
+  }
+  if (checkAbort) checkAbort.abort();
+  const ac = new AbortController();
+  checkAbort = ac;
+  const ver = ++checkVer;
+  // 先从脏集合摘掉本批：请求飞行中若再改点，markDirty 会把 id 加回来，
+  // 完成后就不会误把"更新过的几何"标成已诊。
+  const batchIds = targets.map(r => r.id);
+  for (const id of batchIds) dirtyRoadIds.delete(id);
+  const label = (mode === "full" ? "完整诊断" : "诊断") + " " + batchIds.join(",");
+  document.getElementById("diagAge").textContent = label + "…";
   try {
     const res = await fetch("/api/check", { method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ roads: sendable }) });
+      body: JSON.stringify({ roads: targets, mode }),
+      signal: ac.signal });
     const j = await res.json();
-    if (j.error) return status("诊断失败: " + j.error, true);
-    reports = {}; j.reports.forEach(r => reports[r.id] = r);
-    lastCheck = Date.now(); renderDiag(); draw();
-  } catch (e) { status("诊断请求失败: " + e, true); }
+    if (ver !== checkVer) return;          // 被更新的请求取代了
+    if (j.error) {
+      for (const id of batchIds) dirtyRoadIds.add(id);
+      return status("诊断失败: " + j.error, true);
+    }
+    (j.reports || []).forEach(r => { reports[r.id] = r; });
+    lastCheck = Date.now();
+    renderDiag();
+    renderSide();
+    draw();
+  } catch (e) {
+    if (e && e.name === "AbortError") return;
+    for (const id of batchIds) dirtyRoadIds.add(id);
+    status("诊断请求失败: " + e, true);
+  }
 }
 function renderDiag() {
   const d = document.getElementById("diag");
-  const rows = Object.values(reports).map(r => {
+  const rows = Object.values(reports).sort((a, b) => a.id - b.id).map(r => {
     if (r.error) return '<div class="row"><b>' + r.name + '</b> <span class="no">' + r.error + "</span></div>";
     const ok = !r.issues.length;
+    const lite = r.mode === "lite";
+    let extra = "";
+    if (lite) {
+      extra = ' <span class="k dim">（粗检）</span>';
+    } else {
+      extra =
+        ' <span class="k">拟合 </span><span class="v">' + r.fit_deviation_m + "m</span>" +
+        ' <span class="k">Δz </span><span class="v">' + r.dz_rmse_m + "m</span><br>" +
+        '<span class="k">几何段 </span><span class="v">' + r.n_geometry + "</span> " +
+        '<span class="v dim">' + JSON.stringify(r.kinds) + "</span>" +
+        (r.smooth_disp_m > 0.01
+          ? ' <span class="k">挪线 </span><span class="v">' + r.smooth_disp_m + "m</span>"
+          : "");
+    }
     return '<div class="row"><b>' + r.id + " · " + r.name + '</b> ' +
       '<span class="' + (ok ? "ok" : "no") + '">' + (ok ? "通畅" : r.issues.join("；")) + "</span><br>" +
       '<span class="k">地板 </span><span class="v">' + (r.floor_frac * 100).toFixed(1) + "%</span>" +
       ' <span class="k">最差净空 </span><span class="v">' +
-      (r.clearance_worst_m == null ? "3m内无障碍" : r.clearance_worst_m + "m") +
-      ' <span class="k">拟合 </span><span class="v">' + r.fit_deviation_m + "m</span>" +
-      ' <span class="k">Δz </span><span class="v">' + r.dz_rmse_m + "m</span><br>" +
-      '<span class="k">几何段 </span><span class="v">' + r.n_geometry + "</span> " +
-      '<span class="v dim">' + JSON.stringify(r.kinds) + "</span>" +
-      (r.smooth_disp_m > 0.01 ? ' <span class="k">挪线 </span><span class="v">' + r.smooth_disp_m + "m</span>" : "") +
+      (r.clearance_worst_m == null ? "3m内无障碍" : r.clearance_worst_m + "m") + "</span>" +
+      extra +
       "</div>";
   });
   d.innerHTML = rows.join("") || '<span class="dim">—</span>';
+  const pending = dirtyRoadIds.size;
   document.getElementById("diagAge").textContent =
-    new Date(lastCheck).toLocaleTimeString();
+    (lastCheck ? new Date(lastCheck).toLocaleTimeString() : "") +
+    (pending ? " · " + pending + " 条待诊" : "");
 }
 
 // --------------------------------------------------------- 高度裁剪拉条 --
@@ -676,7 +772,7 @@ async function save() {
   }
   if (j.error) { status("保存失败: " + j.error, true); return false; }
   savedJson = JSON.stringify(roads); syncDirty();
-  j.reports.forEach(r => reports[r.id] = r);
+  (j.reports || []).forEach(r => { reports[r.id] = r; dirtyRoadIds.delete(r.id); });
   renderDiag(); renderSide(); draw();
   status("已保存 " + (META.traces || "traces.json") + "（" + j.roads +
     " 条路，z 已从扫描网格反推）");
@@ -709,10 +805,13 @@ async function emit() {
   if (err || j.error) return status("生成失败: " + (err || j.error), true);
   const ck = j.checks || { total: 0, fails: ["拿不到校验结果"] };
   const bad = (ck.fails || []).length;
+  const nskip = (ck.skips || []).length;
   status("已生成 " + j.files.join("  ") +
     (j.staged ? "   已投放 " + j.staged + "/（fbx+xodr 同名配对，可直接 make import）" : "") +
     "   校验 " + ck.total + " 项" + (bad ? "，" + bad + " 项未过：" + ck.fails.join(" ｜ ")
-                                       : "全过（含 CARLA 真解析 + 闭环比对）") +
+                                       : (nskip ? "全过（已跳过 " + nskip +
+                                          " 项 CARLA 真解析：未安装 carla）"
+                                                : "全过（含 CARLA 真解析 + 闭环比对）")) +
     "   CARLA 里那份: " + (j.deploy ? j.deploy.state : "未知") +
     (j.deploy && j.deploy.state === "未导入"
       ? "　首次要把 FBX 导成关卡：点「⎘ make import」复制命令" : "") +
@@ -897,6 +996,19 @@ document.getElementById("btnImport").onclick = copyImport;
 document.getElementById("btnCalib").onclick = calib;
 document.getElementById("btnCfg").onclick = toggleCfg;
 document.getElementById("cfgSave").onclick = saveCfg;
+document.getElementById("btnFullDiag").onclick = () => {
+  markRoadsDirty(roads.map(r => r.id));
+  runCheck("full", true);
+};
+document.getElementById("liveDiag").onchange = () => {
+  if (liveDiagOn()) scheduleCheck();
+  else {
+    if (checkAbort) checkAbort.abort();
+    clearTimeout(checkTimer);
+    document.getElementById("diagAge").textContent =
+      dirtyRoadIds.size ? "实时已关（有未诊断改动）" : "";
+  }
+};
 document.getElementById("showBand").onchange = draw;
 document.getElementById("showGrid").onchange = draw;
 document.getElementById("showOcc").onchange = draw;
@@ -1163,7 +1275,10 @@ async function bootInner() {
   }
   savedJson = JSON.stringify(roads);   // 「未保存」灯的基准，就是刚读进来的这份存档
   activeId = roads.length ? roads[0].id : null;
-  resampleAll(); renderSide(); runCheck();
+  reports = {};
+  dirtyRoadIds = new Set(roads.map(r => r.id));
+  resampleAll(); renderSide();
+  runCheck("lite", true);
   refreshDeploy();
 
   // 布局尺寸可能还没定下来：重试直到拿到真实宽高，再居中适配底图

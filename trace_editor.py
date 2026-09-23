@@ -384,18 +384,29 @@ def enrich(pts_xy):
     return out
 
 
-def road_report(road):
-    """单条路的完整诊断：净空/平整/地板 + 拟合残差 + 路面-地板 Δz。"""
+def road_report(road, mode="full"):
+    """单条路诊断。
+
+    mode="lite"：粗净空（大步长、横向只采中心+边缘），不做拟合/Δz —— 描线热路径用。
+    mode="full"：密净空 + 拟合残差 + 路面-地板 Δz —— 生成前 / 手动完整诊断用。
+    """
+    lite = mode == "lite"
     pts = [(p["x"], p["y"], p["z"]) for p in road["points"]]
     hw = max(float(road.get("width_left", 1.75)),
              float(road.get("width_right", 1.75)))
+    pad = hw + 0.3
     r = {"id": road["id"], "name": road.get("name", ""),
          "n_points": len(pts), "length_m": round(pts and road["points"][-1]["s"] or 0.0, 2),
-         "z_missing": sum(1 for p in road["points"] if p.get("z_missing"))}
+         "z_missing": sum(1 for p in road["points"] if p.get("z_missing")),
+         "mode": "lite" if lite else "full"}
     if len(pts) < 2:
         r["error"] = "至少需要 2 个点"
         return r
-    frac, worst, issues = probe_line(field, pts, hw + 0.3, CLEAR_MIN, FLAT_TOL)
+    if lite:
+        frac, worst, issues = probe_line(
+            field, pts, pad, CLEAR_MIN, FLAT_TOL, ds=1.0, lateral_step=pad)
+    else:
+        frac, worst, issues = probe_line(field, pts, pad, CLEAR_MIN, FLAT_TOL)
     r["floor_frac"] = round(frac, 4)
     wm, wpos = worst if worst[1] else (None, None)
     # inf 会序列化成 JSON 里不存在的 Infinity，浏览器 JSON.parse 直接炸，所以转 None
@@ -406,6 +417,14 @@ def road_report(road):
                                if wpos is not None and wm is not None and wm < CLEAR_MIN
                                else None)
     r["issues"] = issues
+    if lite:
+        r["fit_deviation_m"] = None
+        r["smooth_disp_m"] = None
+        r["n_geometry"] = None
+        r["kinds"] = None
+        r["dz_rmse_m"] = None
+        r["dz_p95_m"] = None
+        return r
     try:
         fitted = FG.build({"roads": [road]}, None, "asam")["roads"][0]
         r["fit_deviation_m"] = round(fitted["quality"]["max_fit_deviation_m"], 4)
@@ -582,7 +601,9 @@ def api_put():
     with open(STATE["traces_path"], "w") as f:
         json.dump(out, f, indent=1, ensure_ascii=False)
     return jsonify({"ok": True, "roads": len(roads),
-                    "reports": [road_report(r) for r in roads]})
+                    # 存盘热路径不做完整拟合：大网格上 full 诊断会卡好几秒。
+                    # 需要拟合/Δz 时点侧栏「完整诊断」。
+                    "reports": [road_report(r, mode="lite") for r in roads]})
 
 
 @app.route("/api/check", methods=["POST"])
@@ -590,6 +611,9 @@ def api_check():
     if not STATE.get("loaded"):
         return not_loaded()
     doc = request.get_json(force=True)
+    mode = doc.get("mode", "full")
+    if mode not in ("lite", "full"):
+        mode = "full"
     try:
         reps = []
         for r in doc.get("roads", []):
@@ -597,8 +621,8 @@ def api_check():
                 continue
             r = dict(r)
             r["points"] = enrich(r["points"])   # 客户端只给 x,y，这里补 z/s
-            reps.append(road_report(r))
-        return jsonify({"reports": reps})
+            reps.append(road_report(r, mode=mode))
+        return jsonify({"reports": reps, "mode": mode})
     except Exception:
         return jsonify({"error": traceback.format_exc()}), 500
 
@@ -1090,7 +1114,8 @@ def api_emit():
         # 校验直接调 validate.run：检查项只有一份实现，web 里全绿而命令行有 FAIL
         # 是最难查的那种不一致。它自己会 import carla 做真解析，所以这里不再单独探一次。
         vrep, _, _ = validate.run(out_dir, stem, stem + "_asam")
-        checks = {"total": len(vrep.rows), "fails": vrep.fails}
+        checks = {"total": vrep.n_checks(), "fails": vrep.fails,
+                  "skips": vrep.skips}
         parse_ok = not any("carla.Map 解析" in f for f in vrep.fails)
     except SystemExit as e:
         return jsonify({"error": str(e)}), 400

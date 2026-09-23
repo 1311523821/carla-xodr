@@ -50,10 +50,12 @@ python3 trace_editor.py --port 8071
 只在扫描放别的挂载点上时才需要（`--scan-root /data/scans`），它圈定对话框能浏览的
 范围，服务端会拒绝该目录之外的任何路径。
 
-每个场景一个目录：`cache/<相对扫描根的路径，/ 换成 __>/`，里面是这份场景的全部东西 ——
-`scene.glb`（浏览器显示它，服务端的地板高度场和遮挡判定读同一个文件）、`basemap.png`、
-这个场景自己的 `traces.json`、`frame.json` 和 `out/`。例：
-`<项目>/test.fbx` → `cache/<项目>__test/`。
+每个场景一个目录：`cache/<FBX 文件名>/`（**和 `--scan-root` 无关**，换根目录不会把
+工作切成两半），里面是这份场景的全部东西 —— `scene.glb`（浏览器显示它，服务端的
+地板高度场和遮挡判定读同一个文件）、`basemap.png`、这个场景自己的 `traces.json`、
+`frame.json`、`out/`，还有一个 `source` 认领文件。例：`任意路径/test_5.fbx` → `cache/test_5/`。
+两个不同目录下的同名 FBX（`test.fbx` 和 `model/test.fbx`）由认领文件区分，
+后来者退到 `cache/test__<路径哈希>/`。
 
 ### 操作流程
 

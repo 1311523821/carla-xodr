@@ -182,13 +182,34 @@ def bake(fbx, cache, cfg):
 
 # ---------------------------------------------------------------- 载入场景 --
 def cache_dir_for(fbx):
-    """一个场景一个目录。目录名用**相对扫描根的路径**而不是文件名，否则
-    `test.fbx` 和 `model/test.fbx` 会撞进同一个 cache/test/，两份场景共用一份
-    GLB 和一份路点存档。"""
-    rel = os.path.relpath(fbx, SCANS["root"])
-    if rel.startswith(".."):
-        rel = fbx.lstrip(os.sep)
-    return os.path.join(SCANS["cache"], os.path.splitext(rel)[0].replace(os.sep, "__"))
+    """一个场景一个目录，目录名 = **FBX 文件名**（不带扩展名），不经过 scan-root。
+
+    以前用"相对扫描根的路径把 / 换成 __"，于是换一个 --scan-root，同一份扫描就
+    映射到另一个目录：描的线和标定解全都"看不见"了，而工具不报错，只是在新目录里
+    重新烘一份空的 —— 你会以为线丢了，然后重描一遍，磁盘上就留下两份 traces.json。
+
+    同名不同文件（`test.fbx` 和 `model/test.fbx`）靠目录里的 `source` 认领文件区分：
+    谁先占了这个名字谁用干净的 `test/`，后来者退到 `test__<路径哈希前6位>/`。
+    同一个文件路径永远算出同一个目录，所以换 scan-root 不再改变归属。
+    """
+    ab = os.path.abspath(fbx)
+    base = os.path.splitext(os.path.basename(ab))[0]
+    cand = os.path.join(SCANS["cache"], base)
+    claim = os.path.join(cand, "source")
+    if os.path.isfile(claim):
+        with open(claim) as f:
+            got = f.read().strip()
+        if got and got != ab:
+            cand = os.path.join(SCANS["cache"], base + "__"
+                                + hashlib.sha1(ab.encode()).hexdigest()[:6])
+    return cand
+
+
+def claim_scene(cache, fbx):
+    """把"这个目录属于哪个 FBX"记下来，供 cache_dir_for 区分同名不同文件。"""
+    with open(os.path.join(cache, "source"), "w") as f:
+        f.write(os.path.abspath(fbx) + "\n")
+
 
 
 def migrate_legacy_traces(dest, fbx):
@@ -221,6 +242,8 @@ def load_worker(fbx):
     global field
     try:
         cache = cache_dir_for(fbx)
+        os.makedirs(cache, exist_ok=True)
+        claim_scene(cache, fbx)           # 先认领，烘焙失败也不改归属：路径没变
         glb = bake(fbx, cache, load_config())
         prog("running", 1, "open3d 解析 GLB 三角面")
         f = FloorField(glb)

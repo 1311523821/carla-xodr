@@ -18,7 +18,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mesh_field import FloorField            # noqa: E402
-from fit_geometry import FRAME_ACCEPTANCE, frame_json_path  # noqa: E402
+from fit_geometry import (FRAME_ACCEPTANCE, M_XODR2WORLD4,
+                          frame_json_path)  # noqa: E402
 
 INLIER_M = 0.30
 
@@ -29,8 +30,21 @@ def run(mesh, xodr, frame_json=None, step=0.5, lane=0):
     Δz 是"xodr 认为的路面高度 - 扫描网格上的地板高度"，也就是"车会不会悬空/陷进去"。
     """
     fjp = frame_json or frame_json_path(mesh)
-    fj = json.load(open(fjp))
-    A = np.asarray(fj["A_S2W"], dtype=float)
+    note = None
+    try:
+        with open(fjp) as f:
+            fj = json.load(f)
+        A = np.asarray(fj["A_S2W"], dtype=float)
+    except (OSError, KeyError, TypeError, ValueError) as e:
+        # 没标定过不是错误，是"这一步还没做"。未标定时 A_S2W 取 CARLA 内建的那个
+        # 镜像（和 derive_T_S2X 同一个约定 => T_S2X 退化成单位阵），检查照样能跑，
+        # 只是残差里含真实平移量，所以要把原因说出来。
+        fj = {}
+        A = M_XODR2WORLD4.copy()
+        note = ("%s：%s —— 按未标定计算，残差里含扫描帧→world 的平移量"
+                % ("还没有标定过（缺 frame.json）" if isinstance(e, OSError)
+                   else "frame.json 读不动（%s: %s）" % (type(e).__name__, e),
+                   os.path.relpath(fjp)))
     Ai = np.linalg.inv(A)
 
     import carla
@@ -87,6 +101,7 @@ def run(mesh, xodr, frame_json=None, step=0.5, lane=0):
 
     lim = fj.get("acceptance", {}).get("rmse_z_m", FRAME_ACCEPTANCE["rmse_z_m"])
     return {"frame_json": fjp, "calibrated": bool(fj.get("calibrated")),
+            "frame_note": note,
             "lane": lane, "step": step, "n": len(W), "tri_count": field.tri_count,
             "floor_frac": float(ok.mean()),
             "rmse": math.sqrt(float(np.mean(ri ** 2))), "p50": float(np.median(ri)),
@@ -108,6 +123,8 @@ def main():
 
     d = run(args.mesh, args.xodr, args.frame_json, args.step, args.lane)
     print("A_S2W calibrated=%s" % d["calibrated"])
+    if d.get("frame_note"):
+        print("  " + d["frame_note"])
     print("\n%d 个 %s 采样点，网格 %d 面" % (
         d["n"], "参考线(lane 0)" if d["lane"] == 0 else "lane %d" % d["lane"],
         d["tri_count"]))

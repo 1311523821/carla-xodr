@@ -802,11 +802,17 @@ async function align() {
   status("对齐检查中…（约 3 秒，要读扫描网格）");
   const { j, err } = await jfetch("/api/align", { method: "POST" });
   if (err || j.error) return status("对齐检查失败: " + (err || j.error), true);
-  const rows = [kv("Δz RMSE", j.rmse.toFixed(4) + " m"),
+  // 没标定时先把原因摆在最上面，否则下面那串 Δz 会被当成"拟合很差"
+  const rows = [];
+  if (j.frame_note) {
+    const n = document.createElement("div");
+    n.className = "row no"; n.textContent = j.frame_note; rows.push(n);
+  }
+  rows.push(kv("Δz RMSE", j.rmse.toFixed(4) + " m"),
     kv("p50 / p95 / max", j.p50.toFixed(4) + " / " + j.p95.toFixed(4) + " / " +
        j.max.toFixed(4) + " m"),
     kv("内点率(|Δz|<" + j.inlier_m.toFixed(2) + ")", (100 * j.inlier_frac).toFixed(1) + "%"),
-    kv("采样点", j.n + " 个，地板可查 " + (100 * j.floor_frac).toFixed(1) + "%")];
+    kv("采样点", j.n + " 个，地板可查 " + (100 * j.floor_frac).toFixed(1) + "%"));
   j.roads.forEach(r => rows.push(kv("road " + r.id, r.few ? "可对比点 " + r.n + " —— 太少"
     : "n=" + r.n + "  RMSE " + r.rmse.toFixed(4) + "  中位 " +
       (r.med >= 0 ? "+" : "") + r.med.toFixed(3))));

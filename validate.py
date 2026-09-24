@@ -3,7 +3,9 @@
 
 三层，从便宜到权威：
   1) 手写不变量（road.length==Σgeo、s 连续、C0 衔接、车道宽度/id/laneSection 覆盖）
-  2) carla.Map(name, xml) —— 用 CARLA 自己的解析器与道路模型，无需服务端/UE
+  2) carla.Map(name, xml) —— 用 CARLA 自己的解析器与道路模型，无需服务端/UE。
+     没装 carla 包时这一层和下面的闭环记 SKIP，不记 FAIL（结构检查照常）。
+     import 抛了别的错（例如 numpy ABI）仍是 FAIL，因为包在却不能用。
   3) 闭环：本仓库 xodr_geom 的解析求值 vs CARLA get_waypoint_xodr 返回的坐标。
      两者逐点吻合，才说明"我们理解的 CARLA 几何语义"不是空想；
      同时断言 lane +1 落在 +t 法向侧、且 C 帧与 S 帧两份文件互为声明过的镜像。
@@ -27,8 +29,9 @@ LANE_SIDE_TOL = 0.05    # 车道横向归属容差（米）
 
 class Report:
     def __init__(self):
-        self.rows = []
+        self.rows = []          # (ok, label, detail)；ok 为 None 表示 SKIP
         self.fails = []
+        self.skips = []
 
     def check(self, ok, label, detail=""):
         self.rows.append((bool(ok), label, detail))
@@ -36,11 +39,21 @@ class Report:
             self.fails.append("%s  %s" % (label, detail))
         return ok
 
+    def skip(self, label, detail=""):
+        self.rows.append((None, label, detail))
+        self.skips.append("%s  %s" % (label, detail) if detail else label)
+        return None
+
+    def n_checks(self):
+        return sum(1 for ok, _, _ in self.rows if ok is not None)
+
     def dump(self):
         w = max(len(l) for _, l, _ in self.rows) if self.rows else 10
         for ok, label, detail in self.rows:
-            print("  %s  %-*s  %s" % ("PASS" if ok else "FAIL", w, label, detail))
-        print("\n%d checks, %d failed" % (len(self.rows), len(self.fails)))
+            tag = "SKIP" if ok is None else ("PASS" if ok else "FAIL")
+            print("  %s  %-*s  %s" % (tag, w, label, detail))
+        extra = ", %d skipped" % len(self.skips) if self.skips else ""
+        print("\n%d checks, %d failed%s" % (self.n_checks(), len(self.fails), extra))
         return 0 if not self.fails else 1
 
 
@@ -119,6 +132,11 @@ def check_xml(path, rep, tag):
 def check_carla(xml_text, map_name, rep, tag):
     try:
         import carla
+    except ModuleNotFoundError:
+        # 没装是 README 写明的可选依赖，结构检查仍有效。包在却 import 失败
+        #（numpy ABI 等）走下面的 Exception，必须 FAIL，否则会把坏环境当成"跳过"。
+        rep.skip("%s CARLA 真解析" % tag, "未安装 carla PythonAPI，跳过真解析与闭环")
+        return None, None
     except Exception as e:
         rep.check(False, "%s import carla" % tag, str(e))
         return None, None
